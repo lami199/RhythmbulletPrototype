@@ -1,0 +1,8 @@
+﻿{
+  "activeCourse": "course_1",
+  "courses": {
+    "course_1": "Content/Maps/map.json",
+    "course_2": "Content/Maps/map_course2.json",
+    "boss": "Content/Maps/map_boss.json"
+  }
+}

@@ -1,0 +1,34 @@
+# Build results
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+
+# Rider
+.idea/
+*.sln.iml
+.DS_Store
+
+# Build verification folders
+build_verify*/
+
+# Dependencies
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# MacOS
+.AppleDouble
+.LSOverride
+
+# Misc
+*.log
+*.swp
+*.swo
+*~
+# Audio files
+Content/Audio/song.ogg
+*.ogg

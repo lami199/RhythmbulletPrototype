@@ -1,0 +1,215 @@
+﻿{
+  // GameMaker 2 course routing:
+  // Create Content/Maps/course_routes.json with { activeCourse, courses:{} }.
+  // Launch executable with a course id argument to override activeCourse.
+  // Example arg: course_2
+
+  // =========================
+  // Core timing + playfield
+  // =========================
+  "audioPath": "Content/Audio/song.ogg",
+  "targetFps": 120,            // 60, 120, 240, 360...
+  "keyboardMoveSpeed": 130,    // WASD fixed movement speed (px/sec)
+  "approachMs": 900,
+  "circleRadius": 42,
+  "globalOffsetMs": 0,
+  "cursorHitboxRadius": 4,
+  "numberCycle": 5,
+  "showNumbers": true,
+
+  // =========================
+  // Health tuning (JSON refs)
+  // =========================
+  "maxLives": 100,
+  "bulletHitDamage": 22,
+  "lifeGainStepScore": 350,
+  "lifeGainAmount": 4,
+
+  // Wave passability helper
+  "autoBalanceWaves": true,
+  "waveSafetyMargin": 8,
+
+  // =========================
+  // Background visuals
+  // =========================
+  "backgroundTopColor": "#122034",
+  "backgroundBottomColor": "#080D16",
+  "backgroundAccentColor": "#274268",
+  "backgroundGridAlpha": 0.2,
+
+  // Optional full-screen background image (jpg/png)
+  // "backgroundImagePath": "Content/Images/stage_full.jpg",
+  // "backgroundImageAlpha": 1.0,
+  // "backgroundImageMode": "cover", // cover | stretch
+
+  // Optional transparent overlay png/jpg (e.g., darkening layer)
+  // "backgroundOverlayPath": "Content/Images/black_overlay_50.png",
+  // "backgroundOverlayAlpha": 0.5,
+
+  // =========================
+  // Bullet globals
+  // =========================
+  "bulletOutlineThickness": 2,
+  "centerWarningRadius": 120,
+  "centerWarningLeadMs": 350,
+  "centerWarningAlpha": 0.35,
+
+  // =========================
+  // Notes
+  // =========================
+  "notes": [
+    { "timeMs": 1200, "x": 0.80, "y": 0.42, "outlineColor": "#FFFFFF" },
+    { "timeMs": 2500, "x": 0.62, "y": 0.52, "outlineColor": "#FFDD55" },
+    { "timeMs": 3700, "x": 0.44, "y": 0.60, "outlineColor": "#FF77C8" },
+    { "timeMs": 4900, "x": 0.28, "y": 0.42, "outlineColor": "#88FFAA" },
+    { "timeMs": 5750, "x": 0.52, "y": 0.30, "outlineColor": "#AADDFF" },
+    { "timeMs": 9200, "x": 0.78, "y": 0.31, "outlineColor": "#FFFFFF" },
+    { "timeMs": 10400, "x": 0.22, "y": 0.62, "outlineColor": "#FFFFFF" },
+    { "timeMs": 11600, "x": 0.58, "y": 0.45, "outlineColor": "#FFFFFF" }
+  ],
+
+  // =========================
+  // Drag notes
+  // =========================
+  "dragNotes": [
+    {
+      "timeMs": 7000,
+      "durationMs": 2100,
+      "pipeRadius": 26,
+      "fillColor": "#4AA7FF",
+      "outlineColor": "#FFFFFF",
+      "path": [
+        { "x": 0.15, "y": 0.70 },
+        { "x": 0.30, "y": 0.46 },
+        { "x": 0.50, "y": 0.58 },
+        { "x": 0.70, "y": 0.33 },
+        { "x": 0.85, "y": 0.44 }
+      ]
+    }
+  ],
+
+  // =========================
+  // Bullet event syntax
+  // =========================
+  // Common fields:
+  // {
+  //   "timeMs": 2000,
+  //   "pattern": "radial",
+  //   "count": 12,
+  //   "speed": 260,
+  //   "intervalMs": 80,
+  //   "x": 0.5,
+  //   "y": 0.5,
+  //   "bulletType": "circle",  // circle | arrow | rice | kunai | orb
+  //   "bulletSize": 8,           // preferred size var
+  //   "radius": 8,               // legacy alias
+  //   "outlineThickness": 2,
+  //   "spreadDeg": 60,
+  //   "angleStepDeg": 12
+  // }
+
+  "bullets": [
+    
+    { "timeMs": 1600, "pattern": "wall_bottom", "count": 18, "speed": 150, "x": 0.5, "y": 1.0, "bulletType": "rice", "bulletSize": 7 },
+    { "timeMs": 2200, "pattern": "double_ring", "count": 22, "speed": 190, "x": 0.5, "y": 0.45, "bulletType": "circle", "bulletSize": 8 },
+    { "timeMs": 0, "pattern": "radial", "count": 12, "speed": 240, "x": 0.5, "y": 0.5, "bulletType": "circle", "bulletSize": 8}
+  ]
+
+  // New Moving patterns (25):
+  // osc_wave_wall, arc_sweep, rot_drift_fan, spiral_drift_rain, accel_sweep,
+  // sine_stream, sine_ribbon, helix_crossfire, mirror_wave, zigzag_barrage,
+  // elastic_arc, staggered_arc, wave_tunnel, vortex_cluster, diamond_rain_sweep,
+  // butterfly_scatter_drift, crescent_cascade, rotating_kunai_fan, accelerating_cross_spiral,
+  // orbiting_satellites, lateral_spiral_lace, drifting_petal_storm, pendulum_lances,
+  // sidewind_snakes, flutter_columns
+  //
+  // New Static patterns (25):
+  // static_ring, static_double_ring, static_pulse_rings, static_grid, static_shift_grid,
+  // static_flower_mandala, static_rot_flower, static_starburst, static_expanding_star_petals,
+  // static_crisscross_lattice, static_square_storm, static_fractal_hex, static_fractal_diamond,
+  // static_heart_burst, static_crescent_orbit, static_cross_bloom, static_orbital_shell,
+  // static_petal_crown, static_droplet_fountain, static_kunai_wheel, static_arrow_compass,
+  // static_crystal_burst, static_hex_shield, static_diamond_web, static_mandala_12
+  //
+  // Supported bullet shapes:
+  // orb, circle, rice, kunai, butterfly, star, arrowhead, droplet, crystal, diamond,
+  // petal, flame_shard, cross_shard, crescent, heart_shard, hex_shard
+
+  // Pasteable template objects (drop any one inside "bullets": [ ... ]).
+  // Shared optional fields you can add to any template:
+  // "x":0.5,"y":0.0,"bulletType":"circle","bulletSize":8,"outlineThickness":2
+  //
+  // {
+  //   "timeMs": 0, "pattern": "radial", "count": 12, "speed": 240, "x": 0.5, "y": 0.5, "bulletType": "circle", "bulletSize": 8
+  // },
+  // {
+  //   "timeMs": 0, "pattern": "aimed", "count": 6, "speed": 320, "intervalMs": 80, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8
+  // },
+  // {
+  //   "timeMs": 0, "pattern": "spiral", "count": 18, "speed": 240, "intervalMs": 60, "angleStepDeg": 12, "x": 0.5, "y": 0.5, "bulletType": "rice", "bulletSize": 7
+  // },
+  // {
+  //   "timeMs": 0, "pattern": "fan", "count": 7, "speed": 300, "spreadDeg": 60, "x": 0.5, "y": 0.5, "bulletType": "kunai", "bulletSize": 8
+  // },
+  // {
+  //   "timeMs": 0, "pattern": "ring", "count": 16, "speed": 230, "x": 0.5, "y": 0.5, "bulletType": "orb", "bulletSize": 8
+  // },
+  // {
+  //   "timeMs": 0, "pattern": "ring_offset", "count": 16, "speed": 230, "x": 0.5, "y": 0.5, "bulletType": "circle", "bulletSize": 8
+  // },
+  // {
+  //   "timeMs": 0, "pattern": "double_ring", "count": 18, "speed": 230, "x": 0.5, "y": 0.5, "bulletType": "circle", "bulletSize": 8
+  // },
+  // {
+  //   "timeMs": 0, "pattern": "triple_ring", "count": 18, "speed": 230, "x": 0.5, "y": 0.5, "bulletType": "circle", "bulletSize": 8
+  // },
+  // { "timeMs": 0, "pattern": "cross", "speed": 250, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "plus", "speed": 250, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "x_cross", "speed": 250, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "star5", "speed": 240, "x": 0.5, "y": 0.5, "bulletType": "kunai", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "star8", "speed": 240, "x": 0.5, "y": 0.5, "bulletType": "kunai", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "flower6", "speed": 230, "x": 0.5, "y": 0.5, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "flower8", "speed": 230, "x": 0.5, "y": 0.5, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "flower12", "speed": 230, "x": 0.5, "y": 0.5, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "pinwheel4", "count": 16, "speed": 240, "intervalMs": 55, "x": 0.5, "y": 0.5, "bulletType": "orb", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "pinwheel8", "count": 24, "speed": 250, "intervalMs": 45, "x": 0.5, "y": 0.5, "bulletType": "orb", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "nova_small", "speed": 260, "x": 0.5, "y": 0.5, "bulletType": "circle", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "nova_large", "speed": 260, "x": 0.5, "y": 0.5, "bulletType": "circle", "bulletSize": 9 },
+  // { "timeMs": 0, "pattern": "petals", "speed": 230, "x": 0.5, "y": 0.5, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "petals_dense", "speed": 230, "x": 0.5, "y": 0.5, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "lattice", "speed": 220, "x": 0.5, "y": 0.5, "bulletType": "circle", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "box", "speed": 250, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "corners_in", "speed": 230, "x": 0.5, "y": 0.5, "bulletType": "circle", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "corners_out", "speed": 230, "x": 0.5, "y": 0.5, "bulletType": "circle", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "orbit", "count": 24, "speed": 240, "intervalMs": 45, "x": 0.5, "y": 0.5, "bulletType": "orb", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "orbit_reverse", "count": 24, "speed": 240, "intervalMs": 45, "x": 0.5, "y": 0.5, "bulletType": "orb", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "fan_wide", "count": 9, "speed": 300, "spreadDeg": 120, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "fan_narrow", "count": 5, "speed": 320, "spreadDeg": 35, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "fan_double", "count": 7, "speed": 300, "spreadDeg": 70, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "spiral_dense", "count": 28, "speed": 250, "intervalMs": 35, "angleStepDeg": 12, "x": 0.5, "y": 0.5, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "spiral_sparse", "count": 16, "speed": 240, "intervalMs": 90, "angleStepDeg": 16, "x": 0.5, "y": 0.5, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "helix_cw", "count": 24, "speed": 250, "intervalMs": 40, "x": 0.5, "y": 0.5, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "helix_ccw", "count": 24, "speed": 250, "intervalMs": 40, "x": 0.5, "y": 0.5, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "sweep_cw", "count": 20, "speed": 250, "intervalMs": 40, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "sweep_ccw", "count": 20, "speed": 250, "intervalMs": 40, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "arc_left", "count": 8, "speed": 300, "spreadDeg": 70, "x": 0.5, "y": 0.5, "bulletType": "kunai", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "arc_right", "count": 8, "speed": 300, "spreadDeg": 70, "x": 0.5, "y": 0.5, "bulletType": "kunai", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "wave_left", "count": 8, "speed": 260, "x": 0.5, "y": 0.5, "bulletType": "circle", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "wave_right", "count": 8, "speed": 260, "x": 0.5, "y": 0.5, "bulletType": "circle", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "wall_top", "count": 14, "speed": 190, "x": 0.5, "y": 0.0, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "wall_bottom", "count": 14, "speed": 190, "x": 0.5, "y": 1.0, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "wall_left", "count": 12, "speed": 190, "x": 0.0, "y": 0.5, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "wall_right", "count": 12, "speed": 190, "x": 1.0, "y": 0.5, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "stream_left", "count": 8, "speed": 250, "x": 0.0, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "stream_right", "count": 8, "speed": 250, "x": 1.0, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "stream_top", "count": 8, "speed": 250, "x": 0.5, "y": 0.0, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "stream_bottom", "count": 8, "speed": 250, "x": 0.5, "y": 1.0, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "rain", "count": 20, "speed": 210, "x": 0.5, "y": 0.0, "bulletType": "rice", "bulletSize": 7 },
+  // { "timeMs": 0, "pattern": "shotgun", "count": 12, "speed": 320, "spreadDeg": 55, "x": 0.5, "y": 0.5, "bulletType": "kunai", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "burst_aim", "count": 14, "speed": 330, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "burst_reverse", "count": 14, "speed": 330, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "vortex_in", "count": 24, "speed": 230, "intervalMs": 45, "x": 0.5, "y": 0.5, "bulletType": "orb", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "vortex_out", "count": 24, "speed": 260, "intervalMs": 45, "x": 0.5, "y": 0.5, "bulletType": "orb", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "aimed_line", "count": 6, "speed": 300, "intervalMs": 70, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 },
+  // { "timeMs": 0, "pattern": "aimed_fan", "count": 8, "speed": 320, "spreadDeg": 60, "x": 0.5, "y": 0.5, "bulletType": "arrow", "bulletSize": 8 }
+}
