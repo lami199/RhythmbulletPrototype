@@ -22,6 +22,10 @@ public sealed class BulletEvent
     public float? DirectionDeg { get; set; }
     public float? MovementIntensity { get; set; }
     public string? MotionPattern { get; set; }
+    public int? TelegraphMs { get; set; }
+    public int? LaserDurationMs { get; set; }
+    public float? LaserWidth { get; set; }
+    public float? LaserLength { get; set; }
     public float? X { get; set; }
     public float? Y { get; set; }
 

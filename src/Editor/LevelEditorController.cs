@@ -7,7 +7,8 @@ namespace RhythmbulletPrototype.Editor;
 public sealed class LevelEditorController
 {
     private const int BulletDeleteWindowMs = 100;
-    private const int BulletPlacementPreviewMs = 100;
+    private const int SimulatedBulletMaxMs = 600000;
+    private const int SimulatedBulletStepMs = 16;
     private readonly IAudioTransport _transport;
     private readonly IEditorView _view;
     private readonly LevelSerializer _serializer;
@@ -25,6 +26,7 @@ public sealed class LevelEditorController
     private int _cachedRevision = -1;
     private List<TimelineRow> _cachedRows = new();
     private List<PreviewMark> _cachedMarks = new();
+    private readonly Dictionary<long, BulletDurationCacheEntry> _bulletDurationByEventId = new();
     private TimingAnalysisSnapshot _cachedTimingAnalysis = TimingAnalysisSnapshot.Empty;
     private int _cachedLastEntityEndMs;
     private int _cachedMaxEventTimeMs;
@@ -163,6 +165,7 @@ public sealed class LevelEditorController
     private IReadOnlyList<PreviewMark> BuildPreviewMarks()
     {
         var marks = new List<PreviewMark>(_level.Notes.Count + _level.Bullets.Count);
+        var seenBulletIds = new HashSet<long>();
 
         foreach (var note in _level.Notes)
         {
@@ -190,28 +193,63 @@ public sealed class LevelEditorController
         {
             var x = bullet.X ?? 0.5f;
             var y = bullet.Y ?? 0.5f;
-            var offscreenMs = EstimateBulletVisibleDurationMs(bullet, x, y);
-            var previewLifetimeMs = Math.Min(offscreenMs, BulletPlacementPreviewMs);
+            var offscreenMs = EstimateBulletVisibleDurationMsCached(bullet, x, y);
+            seenBulletIds.Add(bullet.EventId);
 
             marks.Add(new PreviewMark
             {
                 EventId = bullet.EventId,
                 Kind = LevelEditorConstants.EventKindBullet,
                 StartMs = bullet.TimeMs,
-                EndMs = bullet.TimeMs + previewLifetimeMs,
+                EndMs = bullet.TimeMs + offscreenMs,
                 X = Math.Clamp((float)x, 0f, 1f),
                 Y = Math.Clamp((float)y, 0f, 1f),
                 Label = GetBulletDisplayLabel(bullet)
             });
         }
 
+        if (_bulletDurationByEventId.Count > 0)
+        {
+            var staleIds = _bulletDurationByEventId.Keys.Where(id => !seenBulletIds.Contains(id)).ToArray();
+            for (var i = 0; i < staleIds.Length; i++)
+            {
+                _bulletDurationByEventId.Remove(staleIds[i]);
+            }
+        }
+
         return marks;
     }
 
-    private static int EstimateBulletVisibleDurationMs(LevelBulletEvent bullet, double x, double y)
+    private int EstimateBulletVisibleDurationMsCached(LevelBulletEvent bullet, double x, double y)
     {
+        var signature = BuildBulletDurationSignature(bullet, x, y);
+        if (_bulletDurationByEventId.TryGetValue(bullet.EventId, out var cached) &&
+            string.Equals(cached.Signature, signature, StringComparison.Ordinal))
+        {
+            return cached.DurationMs;
+        }
+
         var evt = BuildRuntimeBulletEventForEstimate(bullet, x, y);
-        return SimulateBulletOffscreenDurationMs(evt);
+        var durationMs = SimulateBulletOffscreenDurationMs(evt);
+        _bulletDurationByEventId[bullet.EventId] = new BulletDurationCacheEntry(signature, durationMs);
+        return durationMs;
+    }
+
+    private static string BuildBulletDurationSignature(LevelBulletEvent bullet, double x, double y)
+    {
+        var parts = new List<string>(24)
+        {
+            $"p:{bullet.PatternId}",
+            $"x:{Math.Round(x, 4):0.0000}",
+            $"y:{Math.Round(y, 4):0.0000}"
+        };
+
+        foreach (var pair in bullet.Parameters.OrderBy(p => p.Key, StringComparer.Ordinal))
+        {
+            parts.Add($"{pair.Key}:{Math.Round(pair.Value, 4):0.0000}");
+        }
+
+        return string.Join('|', parts);
     }
 
     private void Execute(EditorCommand command)
@@ -433,6 +471,14 @@ public sealed class LevelEditorController
 
         switch (pattern)
         {
+            case "laser_static":
+                p["count"] = 1;
+                p["speed"] = 0;
+                p["telegraphMs"] = 900;
+                p["laserDurationMs"] = 550;
+                p["laserWidth"] = 22;
+                p["laserLength"] = 1700;
+                break;
             case var _ when BulletSystem.MovingPatterns.Contains(pattern) || BulletSystem.StaticPatterns.Contains(pattern):
                 p["count"] = BulletSystem.MovingPatterns.Contains(pattern) ? 18 : 16;
                 break;
@@ -706,7 +752,7 @@ public sealed class LevelEditorController
         };
 
         if (bullet.Parameters.TryGetValue("count", out var count)) evt.Count = Math.Max(1, (int)Math.Round(count));
-        if (bullet.Parameters.TryGetValue("speed", out var speed)) evt.Speed = (float)Math.Max(1, speed);
+        if (bullet.Parameters.TryGetValue("speed", out var speed)) evt.Speed = (float)Math.Max(0.1, speed);
         if (bullet.Parameters.TryGetValue("intervalMs", out var interval)) evt.IntervalMs = Math.Max(10, (int)Math.Round(interval));
         if (bullet.Parameters.TryGetValue("spreadDeg", out var spread)) evt.SpreadDeg = (float)spread;
         if (bullet.Parameters.TryGetValue("angleStepDeg", out var step)) evt.AngleStepDeg = (float)step;
@@ -715,6 +761,10 @@ public sealed class LevelEditorController
         if (bullet.Parameters.TryGetValue("radius", out var radius)) evt.Radius = (float)radius;
         if (bullet.Parameters.TryGetValue("bulletSize", out var bsize)) evt.BulletSize = (float)bsize;
         if (bullet.Parameters.TryGetValue("outlineThickness", out var outT)) evt.OutlineThickness = (float)outT;
+        if (bullet.Parameters.TryGetValue("telegraphMs", out var telegraphMs)) evt.TelegraphMs = Math.Max(50, (int)Math.Round(telegraphMs));
+        if (bullet.Parameters.TryGetValue("laserDurationMs", out var laserDurationMs)) evt.LaserDurationMs = Math.Max(50, (int)Math.Round(laserDurationMs));
+        if (bullet.Parameters.TryGetValue("laserWidth", out var laserWidth)) evt.LaserWidth = (float)laserWidth;
+        if (bullet.Parameters.TryGetValue("laserLength", out var laserLength)) evt.LaserLength = (float)laserLength;
         if (bullet.Parameters.TryGetValue("shapeId", out var shapeId)) evt.BulletType = ShapeIdToType((int)Math.Round(shapeId));
         if (bullet.Parameters.TryGetValue("motionPatternId", out var motionPatternId)) evt.MotionPattern = MotionPatternIdToName((int)Math.Round(motionPatternId));
         return evt;
@@ -733,13 +783,11 @@ public sealed class LevelEditorController
         system.Reset(beatmap);
 
         var cursor = new Vector2(640f, 360f);
-        const int dtMs = 16;
-        const int maxMs = 600000;
         var sawAny = false;
 
-        for (var t = 0; t <= maxMs; t += dtMs)
+        for (var t = 0; t <= SimulatedBulletMaxMs; t += SimulatedBulletStepMs)
         {
-            system.Update(dtMs / 1000f, t, cursor);
+            system.Update(SimulatedBulletStepMs / 1000f, t, cursor);
             if (system.ActiveBulletCount > 0)
             {
                 sawAny = true;
@@ -750,8 +798,10 @@ public sealed class LevelEditorController
             }
         }
 
-        return maxMs;
+        return SimulatedBulletMaxMs;
     }
+
+    private readonly record struct BulletDurationCacheEntry(string Signature, int DurationMs);
 
     private static string ShapeIdToType(int shapeId)
     {
@@ -892,7 +942,7 @@ public sealed class LevelEditorController
             };
 
             if (b.Parameters.TryGetValue("count", out var count)) evt.Count = Math.Max(1, (int)Math.Round(count));
-            if (b.Parameters.TryGetValue("speed", out var speed)) evt.Speed = (float)Math.Max(1, speed);
+            if (b.Parameters.TryGetValue("speed", out var speed)) evt.Speed = (float)Math.Max(0.1, speed);
             if (b.Parameters.TryGetValue("intervalMs", out var interval)) evt.IntervalMs = Math.Max(10, (int)Math.Round(interval));
             if (b.Parameters.TryGetValue("spreadDeg", out var spread)) evt.SpreadDeg = (float)spread;
             if (b.Parameters.TryGetValue("angleStepDeg", out var step)) evt.AngleStepDeg = (float)step;
@@ -902,6 +952,10 @@ public sealed class LevelEditorController
             if (b.Parameters.TryGetValue("bulletSize", out var bsize)) evt.BulletSize = (float)bsize;
             if (b.Parameters.TryGetValue("outlineThickness", out var outT)) evt.OutlineThickness = (float)outT;
             if (b.Parameters.TryGetValue("glowIntensity", out var glowI)) evt.GlowIntensity = (float)glowI;
+            if (b.Parameters.TryGetValue("telegraphMs", out var telegraphMs)) evt.TelegraphMs = Math.Max(50, (int)Math.Round(telegraphMs));
+            if (b.Parameters.TryGetValue("laserDurationMs", out var laserDurationMs)) evt.LaserDurationMs = Math.Max(50, (int)Math.Round(laserDurationMs));
+            if (b.Parameters.TryGetValue("laserWidth", out var laserWidth)) evt.LaserWidth = (float)laserWidth;
+            if (b.Parameters.TryGetValue("laserLength", out var laserLength)) evt.LaserLength = (float)laserLength;
             if (b.Parameters.TryGetValue("shapeId", out var shapeId)) evt.BulletType = ShapeIdToType((int)Math.Round(shapeId));
             if (b.Parameters.TryGetValue("motionPatternId", out var motionPatternId)) evt.MotionPattern = MotionPatternIdToName((int)Math.Round(motionPatternId));
             if (TryColorFromParams(b.Parameters, "primary", out var primaryHex)) evt.Color = primaryHex;

@@ -10,6 +10,7 @@ public sealed class BulletSystem
     private const int ShapeTextureSize = 96;
     private readonly List<BulletEvent> _events = new();
     private readonly List<Bullet> _active = new();
+    private readonly List<LaserBeam> _lasers = new();
     private readonly Stack<Bullet> _pool = new();
     private readonly List<SpawnWarning> _warnings = new();
     private readonly List<SpawnCountdown> _countdowns = new();
@@ -29,7 +30,7 @@ public sealed class BulletSystem
     public float CenterWarningAlpha { get; set; } = 0.35f;
     public int SpawnCountdownLeadMs { get; set; } = 3000;
     public int PotentiallyImpossibleEvents { get; private set; }
-    public int ActiveBulletCount => _active.Count;
+    public int ActiveBulletCount => _active.Count + _lasers.Count;
     public readonly record struct BulletPreviewDrawData(Vector2 Position, float Radius, float Scale, Color Fill, Color Outline, float OutlineThickness);
 
     public static readonly string[] MovingPatterns =
@@ -62,6 +63,7 @@ public sealed class BulletSystem
         "delayed_homing_adjustment",
         "staggered_time_offset_release",
         "elliptical_orbit_drift",
+        "fountain_arc",
         "mouse_track",
         "shoot_at_mouse"
     };
@@ -69,7 +71,7 @@ public sealed class BulletSystem
     public static readonly string[] StaticPatterns =
     {
         "static_single",
-        "ring_8","ring_12","ring_16","ring_32"
+        "ring_8","ring_12","ring_16","ring_32","laser_static"
     };
 
     public void ApplyBeatmapDefaults(Beatmap beatmap)
@@ -119,6 +121,7 @@ public sealed class BulletSystem
     public void ClearRuntime()
     {
         while (_active.Count > 0) RecycleAt(_active.Count - 1);
+        _lasers.Clear();
         _warnings.Clear();
         _countdowns.Clear();
         _nextEventIndex = 0;
@@ -136,6 +139,8 @@ public sealed class BulletSystem
             SpawnEvent(_events[_nextEventIndex], cursorPos);
             _nextEventIndex++;
         }
+
+        UpdateLasers(dt, cursorPos);
 
         for (var i = _active.Count - 1; i >= 0; i--)
         {
@@ -194,6 +199,8 @@ public sealed class BulletSystem
                     ComputeStaggerReleasePosition(t, b),
                 MotionKind.EllipticalOrbitDrift =>
                     ComputeEllipticalDriftPosition(t, b),
+                MotionKind.FountainArc =>
+                    ComputeFountainArcPosition(t, b),
                 MotionKind.MouseTrack =>
                     ComputeMouseTrackPosition(b, cursorPos, dt),
                 _ => null
@@ -244,6 +251,21 @@ public sealed class BulletSystem
             var r = _active[i].Radius * _active[i].Scale + cursorRadius;
             if (Vector2.DistanceSquared(_active[i].Position, cursorPos) <= r * r) return true;
         }
+
+        for (var i = 0; i < _lasers.Count; i++)
+        {
+            var l = _lasers[i];
+            if (!l.IsActivePhase)
+            {
+                continue;
+            }
+
+            var r = cursorRadius + l.Width * 0.5f;
+            if (DistanceSquaredPointToSegment(cursorPos, l.Start, l.End) <= r * r)
+            {
+                return true;
+            }
+        }
         return false;
     }
 
@@ -252,6 +274,7 @@ public sealed class BulletSystem
         EnsureShapeTextures(render.Pixel.GraphicsDevice);
         DrawWarnings(spriteBatch, render, songTimeMs);
         DrawCountdowns(spriteBatch, text, songTimeMs);
+        DrawLasers(spriteBatch, render, showHitboxes);
         for (var i = 0; i < _active.Count; i++)
         {
             DrawBullet(spriteBatch, render, _active[i], render.Pixel.GraphicsDevice);
@@ -275,6 +298,134 @@ public sealed class BulletSystem
         }
     }
 
+    private void UpdateLasers(float dt, Vector2 cursorPos)
+    {
+        for (var i = _lasers.Count - 1; i >= 0; i--)
+        {
+            var l = _lasers[i];
+            l.AgeMs += dt * 1000f;
+            var t = l.AgeMs / 1000f;
+            var motion = ComputeLaserMotionOffset(l, t);
+            l.CurrentOrigin = l.BaseOrigin + motion;
+            l.CurrentDirection = ComputeLaserDirection(l, cursorPos, dt);
+            l.Start = l.CurrentOrigin;
+            l.End = l.CurrentOrigin + l.CurrentDirection * l.Length;
+            l.IsActivePhase = l.AgeMs >= l.TelegraphMs && l.AgeMs <= (l.TelegraphMs + l.ActiveMs);
+
+            if (l.AgeMs > l.TelegraphMs + l.ActiveMs)
+            {
+                _lasers.RemoveAt(i);
+                continue;
+            }
+
+            _lasers[i] = l;
+        }
+    }
+
+    private static Vector2 ComputeLaserMotionOffset(LaserBeam l, float t)
+    {
+        var dir = l.BaseDirection;
+        var perp = new Vector2(-dir.Y, dir.X);
+        var w = (t * l.Freq + l.Phase) * MathHelper.TwoPi;
+
+        return l.Motion switch
+        {
+            MotionKind.LateralSweepTranslation => new Vector2((24f + l.Amp * 0.85f) * t, 0f),
+            MotionKind.LateralSweepLeftTranslation => new Vector2(-(24f + l.Amp * 0.85f) * t, 0f),
+            MotionKind.SinusoidalPathDeviation => perp * (MathF.Sin(w) * MathF.Max(6f, l.Amp)),
+            MotionKind.UniformOutwardDrift => dir * (MathF.Max(8f, l.Amp * 0.9f) * t),
+            MotionKind.DelayedAccelerationRamp => dir * ComputeDelayedRampDistance(MathF.Max(8f, l.Amp * 0.9f), t),
+            MotionKind.ExpandingSpiralConversion => Rotate(dir, 0.55f * t * t) * (MathF.Max(7f, l.Amp * 0.5f) * t),
+            MotionKind.PulsedVelocityModulation => dir * ComputePulsedDistance(MathF.Max(8f, l.Amp), t, l.Freq, l.Phase) * 0.12f,
+            _ => Vector2.Zero
+        };
+    }
+
+    private static Vector2 ComputeLaserDirection(LaserBeam l, Vector2 cursorPos, float dt)
+    {
+        var direction = l.CurrentDirection.LengthSquared() < 0.0001f ? l.BaseDirection : l.CurrentDirection;
+        if (l.Motion != MotionKind.MouseTrack)
+        {
+            return SafeNormalize(direction);
+        }
+
+        var toCursor = cursorPos - l.CurrentOrigin;
+        if (toCursor.LengthSquared() < 0.0001f)
+        {
+            return SafeNormalize(direction);
+        }
+
+        var desired = SafeNormalize(toCursor);
+        // Keep laser tracking dodgeable: steer with noticeable lag and a low turn cap.
+        const float aimBlend = 0.09f;
+        const float baseTurnRateRadPerSec = 0.2375f;
+        var target = SafeNormalize(Vector2.Lerp(direction, desired, aimBlend));
+        var maxTurn = Math.Max(0.01f, (baseTurnRateRadPerSec + l.Amp * 0.004f) * dt);
+        return SafeNormalize(RotateTowards(direction, target, maxTurn));
+    }
+
+    private static float DistanceSquaredPointToSegment(Vector2 p, Vector2 a, Vector2 b)
+    {
+        var ab = b - a;
+        var denom = ab.LengthSquared();
+        if (denom < 0.0001f)
+        {
+            return Vector2.DistanceSquared(p, a);
+        }
+
+        var t = Math.Clamp(Vector2.Dot(p - a, ab) / denom, 0f, 1f);
+        var c = a + ab * t;
+        return Vector2.DistanceSquared(p, c);
+    }
+
+    private void DrawLasers(SpriteBatch spriteBatch, RenderHelpers render, bool showHitboxes)
+    {
+        for (var i = 0; i < _lasers.Count; i++)
+        {
+            var l = _lasers[i];
+            var telegraphT = Math.Clamp(l.AgeMs / Math.Max(1f, l.TelegraphMs), 0f, 1f);
+            if (!l.IsActivePhase)
+            {
+                // Telegraph cadence: pulse once, pulse twice, then fire.
+                var pulse1 = Pulse01(telegraphT, 0.33f, 0.085f);
+                var pulse2 = Pulse01(telegraphT, 0.67f, 0.085f);
+                var pulse = MathF.Max(pulse1, pulse2);
+                var alpha = 0.14f + telegraphT * 0.22f + pulse * 0.42f;
+                var outlineThickness = l.Width + 4f + pulse * 10f;
+                var coreThickness = Math.Max(2f, l.Width * 0.35f + pulse * 3.5f);
+
+                render.DrawLine(spriteBatch, l.Start, l.End, outlineThickness, Color.White * alpha);
+                render.DrawLine(spriteBatch, l.Start, l.End, coreThickness, new Color(255, 90, 90) * (alpha * 0.95f));
+                render.DrawCircleOutline(spriteBatch, l.Start, 8f + pulse * 6f, 2f, Color.White * (0.55f + pulse * 0.45f));
+                continue;
+            }
+
+            var activeAgeMs = l.AgeMs - l.TelegraphMs;
+            var activeT = Math.Clamp(activeAgeMs / Math.Max(1f, l.ActiveMs), 0f, 1f);
+            var fade = 1f - activeT * 0.25f;
+            render.DrawLine(spriteBatch, l.Start, l.End, l.Width + 6f, l.Outline * (0.55f * fade));
+            render.DrawLine(spriteBatch, l.Start, l.End, l.Width + 2f, l.Fill * (0.55f * fade));
+            render.DrawLine(spriteBatch, l.Start, l.End, l.Width, l.Fill * (0.9f * fade));
+            render.DrawLine(spriteBatch, l.Start, l.End, Math.Max(2f, l.Width * 0.28f), Color.White * (0.35f * fade));
+
+            if (showHitboxes)
+            {
+                render.DrawLine(spriteBatch, l.Start, l.End, Math.Max(1f, l.Width * 0.5f), Color.Yellow * 0.8f);
+            }
+        }
+    }
+
+    private static float Pulse01(float t, float center, float halfWidth)
+    {
+        var d = MathF.Abs(t - center);
+        if (d >= halfWidth)
+        {
+            return 0f;
+        }
+
+        return 1f - (d / halfWidth);
+    }
+
     private void SpawnEvent(BulletEvent evt, Vector2 cursorPos)
     {
         _spawnCursorPos = cursorPos;
@@ -284,7 +435,7 @@ public sealed class BulletSystem
         var origin = ToVirtualPosition(evt);
         var style = ResolveStyle(evt);
         var count = Math.Max(1, evt.Count);
-        var speed = Math.Max(1f, evt.Speed);
+        var speed = Math.Max(0.1f, evt.Speed);
         var dir = GetDirection(p, origin, cursorPos, evt.DirectionDeg);
         var moving = MovingPatterns.Contains(p);
         var stat = StaticPatterns.Contains(p);
@@ -327,7 +478,7 @@ public sealed class BulletSystem
         {
             var motionPattern = string.IsNullOrWhiteSpace(evt.MotionPattern) ? p : evt.MotionPattern!;
             var profile = ResolveMotionProfile(motionPattern, evt.MovementIntensity ?? 1f);
-            SpawnWall(origin, dir, Math.Max(10, count), 900f, speed, style, profile.Kind, profile.Amp, profile.Freq);
+            SpawnByPatternGeometry(p, origin, dir, count, speed, style, evt, profile);
             return;
         }
 
@@ -336,6 +487,38 @@ public sealed class BulletSystem
         else if (p.Contains("fan") || p.Contains("arc")) SpawnFan(origin, dir, MathHelper.ToRadians(evt.SpreadDeg ?? 60f), Math.Max(6, count), speed, style, MotionKind.None, 0f, 1f);
         else if (p.Contains("spiral") || p.Contains("helix") || p.Contains("vortex")) SpawnSpiral(origin, Math.Max(16, count), speed, style, MotionKind.Spiral, 22f, 1.35f);
         else SpawnRadial(origin, Math.Max(10, count), speed, style, MotionKind.None, 0f, 1f);
+    }
+
+    private void SpawnByPatternGeometry(string pattern, Vector2 origin, float direction, int count, float speed, Style style, BulletEvent evt, MotionProfile profile)
+    {
+        if (pattern.Contains("wall"))
+        {
+            SpawnWall(origin, direction, Math.Max(10, count), 900f, speed, style, profile.Kind, profile.Amp, profile.Freq);
+            return;
+        }
+
+        if (pattern.Contains("fan") || pattern.Contains("arc"))
+        {
+            SpawnFan(
+                origin,
+                direction,
+                MathHelper.ToRadians(evt.SpreadDeg ?? 60f),
+                Math.Max(6, count),
+                speed,
+                style,
+                profile.Kind,
+                profile.Amp,
+                profile.Freq);
+            return;
+        }
+
+        if (pattern.Contains("spiral") || pattern.Contains("helix") || pattern.Contains("vortex"))
+        {
+            SpawnSpiral(origin, Math.Max(10, count), speed, style, profile.Kind, profile.Amp, profile.Freq);
+            return;
+        }
+
+        SpawnRadial(origin, Math.Max(3, count), speed, style, profile.Kind, profile.Amp, profile.Freq);
     }
 
     private void SpawnRadial(Vector2 origin, int count, float speed, Style style, MotionKind motion, float amp, float freq, float life = 0f)
@@ -378,6 +561,12 @@ public sealed class BulletSystem
         var amp = profile.Amp;
         var freq = profile.Freq;
 
+        if (pattern == "laser_static")
+        {
+            SpawnLaser(origin, dir, evt, style, profile);
+            return;
+        }
+
         if (pattern == "ring_8")
         {
             SpawnRadial(origin, 8, speed, style, motion, amp, freq);
@@ -411,6 +600,44 @@ public sealed class BulletSystem
 
         // Fallback for supported static patterns.
         SpawnRadial(origin, Math.Max(10, c), speed, style, motion, amp, freq);
+    }
+
+    private void SpawnLaser(Vector2 origin, float dir, BulletEvent evt, Style style, MotionProfile profile)
+    {
+        var laserMotion = profile.Kind == MotionKind.FountainArc ? MotionKind.None : profile.Kind;
+        var telegraphMs = Math.Clamp(evt.TelegraphMs ?? 900, 50, 5000);
+        var activeMs = Math.Clamp(evt.LaserDurationMs ?? 550, 50, 4000);
+        var width = Math.Clamp(evt.LaserWidth ?? 22f, 4f, 220f);
+        var length = Math.Clamp(evt.LaserLength ?? 1700f, 100f, 2600f);
+        var direction = new Vector2(MathF.Cos(dir), MathF.Sin(dir));
+        if (profile.Kind == MotionKind.MouseAimDirection)
+        {
+            var toCursor = _spawnCursorPos - origin;
+            if (toCursor.LengthSquared() > 0.0001f)
+            {
+                direction = SafeNormalize(toCursor);
+            }
+        }
+
+        var fill = ParseColor(evt.Color) ?? new Color(235, 40, 50);
+        var outline = ParseColor(evt.OutlineColor) ?? Color.Black;
+        _lasers.Add(new LaserBeam
+        {
+            BaseOrigin = origin,
+            CurrentOrigin = origin,
+            BaseDirection = SafeNormalize(direction),
+            CurrentDirection = SafeNormalize(direction),
+            Length = length,
+            Width = width,
+            TelegraphMs = telegraphMs,
+            ActiveMs = activeMs,
+            Fill = fill,
+            Outline = outline,
+            Motion = laserMotion,
+            Amp = profile.Amp,
+            Freq = profile.Freq,
+            Phase = (float)_rng.NextDouble() * MathHelper.TwoPi
+        });
     }
 
     private void SpawnSingle(Vector2 origin, float angle, float speed, Style style, MotionKind motion, float amp, float freq, float life = 0f, Vector2? orbitCenter = null)
@@ -827,7 +1054,8 @@ public sealed class BulletSystem
             TimeMs = src.TimeMs, Pattern = src.Pattern, Count = src.Count, Speed = src.Speed, IntervalMs = src.IntervalMs,
             BulletType = src.BulletType, BulletSize = src.BulletSize, Radius = src.Radius, Color = src.Color, OutlineColor = src.OutlineColor,
             GlowColor = src.GlowColor, GlowIntensity = src.GlowIntensity, OutlineThickness = src.OutlineThickness, SpreadDeg = src.SpreadDeg,
-            AngleStepDeg = src.AngleStepDeg, DirectionDeg = src.DirectionDeg, MovementIntensity = src.MovementIntensity, MotionPattern = src.MotionPattern, X = src.X, Y = src.Y
+            AngleStepDeg = src.AngleStepDeg, DirectionDeg = src.DirectionDeg, MovementIntensity = src.MovementIntensity, MotionPattern = src.MotionPattern,
+            TelegraphMs = src.TelegraphMs, LaserDurationMs = src.LaserDurationMs, LaserWidth = src.LaserWidth, LaserLength = src.LaserLength, X = src.X, Y = src.Y
         };
         if (!_autoBalanceWaves || !IsWavePattern(evt.Pattern)) return evt;
         while (evt.Count > 3 && !HasEnoughLaneGap(evt)) evt.Count--;
@@ -881,7 +1109,7 @@ public sealed class BulletSystem
 
         if (string.IsNullOrWhiteSpace(p) || p == "none")
         {
-            return new MotionProfile(MotionKind.UniformOutwardDrift, 0f, 1f);
+            return new MotionProfile(MotionKind.None, 0f, 1f);
         }
 
         return p switch
@@ -914,6 +1142,7 @@ public sealed class BulletSystem
             "delayed_homing_adjustment" => new MotionProfile(MotionKind.DelayedHomingAdjustment, 20f * intensity, 1.0f),
             "staggered_time_offset_release" => new MotionProfile(MotionKind.StaggeredTimeOffsetRelease, 14f * intensity, 1.0f),
             "elliptical_orbit_drift" => new MotionProfile(MotionKind.EllipticalOrbitDrift, 24f * intensity, 0.9f),
+            "fountain_arc" => new MotionProfile(MotionKind.FountainArc, 28f * intensity, 1.0f),
             "mouse_track" => new MotionProfile(MotionKind.MouseTrack, 24f * intensity, 1.0f),
             "shoot_at_mouse" => new MotionProfile(MotionKind.MouseAimDirection, 0f, 1.0f),
             _ => new MotionProfile(MotionKind.UniformOutwardDrift, 10f * intensity, 1f)
@@ -1125,6 +1354,27 @@ public sealed class BulletSystem
         return b.OrbitCenter + Rotate(local, majorAxisRot);
     }
 
+    private static Vector2 ComputeFountainArcPosition(float t, Bullet b)
+    {
+        const float expandPhaseSec = 0.22f;
+        var outward = b.Direction.LengthSquared() < 0.0001f ? new Vector2(0f, 1f) : SafeNormalize(b.Direction);
+        var expandSpeed = MathF.Max(120f + b.Amp * 1.2f, b.BaseSpeed * 0.45f);
+
+        if (t <= expandPhaseSec)
+        {
+            // Early spread preserves ring shape before vertical fountain motion begins.
+            return b.Spawn + outward * (expandSpeed * t);
+        }
+
+        var u = t - expandPhaseSec;
+        var spreadBase = b.Spawn + outward * (expandSpeed * expandPhaseSec);
+        var keepSpread = outward * (b.BaseSpeed * 0.55f * u);
+        var launchUp = -(240f + b.Amp * 1.8f);
+        var gravity = 520f + b.Amp * 2.4f;
+        var vertical = launchUp * u + 0.5f * gravity * u * u;
+        return spreadBase + keepSpread + new Vector2(0f, vertical);
+    }
+
     private static Vector2 ComputeMouseTrackPosition(Bullet b, Vector2 cursorPos, float dt)
     {
         // Tunables for "initial seek then straight" feel.
@@ -1292,6 +1542,28 @@ public sealed class BulletSystem
         public float Scale = 1f;
     }
 
+    private struct LaserBeam
+    {
+        public Vector2 BaseOrigin;
+        public Vector2 CurrentOrigin;
+        public Vector2 BaseDirection;
+        public Vector2 CurrentDirection;
+        public Vector2 Start;
+        public Vector2 End;
+        public float Length;
+        public float Width;
+        public float TelegraphMs;
+        public float ActiveMs;
+        public float AgeMs;
+        public bool IsActivePhase;
+        public Color Fill;
+        public Color Outline;
+        public MotionKind Motion;
+        public float Amp;
+        public float Freq;
+        public float Phase;
+    }
+
     private struct Style
     {
         public float Radius;
@@ -1345,6 +1617,7 @@ public sealed class BulletSystem
         DelayedHomingAdjustment,
         StaggeredTimeOffsetRelease,
         EllipticalOrbitDrift,
+        FountainArc,
         MouseTrack,
         MouseAimDirection,
         Sine,

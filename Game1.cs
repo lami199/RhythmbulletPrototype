@@ -48,6 +48,7 @@ public sealed class Game1 : Game
 
     private const int VirtualWidth = 1280;
     private const int VirtualHeight = 720;
+    private const int EditorPreviewMaxBackSimMs = 30000;
 
     private readonly GraphicsDeviceManager _graphics;
     private readonly InputState _input = new();
@@ -1501,7 +1502,7 @@ public sealed class Game1 : Game
             }
 
             _editorPreviewBullets.ClearRuntime();
-            var previewMap = BuildPreviewBeatmapFromEditor(_editorController.CurrentLevel, out var previewSimStartMs, timelineStartMs, timelineEndMs);
+            var previewMap = BuildPreviewBeatmapFromEditor(_editorController.CurrentLevel, out var previewSimStartMs, timelineStartMs, timelineEndMs, songMs);
             _editorPreviewNotes.Reset(previewMap);
             _editorPreviewBullets.Reset(previewMap);
             SimulateEditorPreviewToTime(songMs, previewSimStartMs);
@@ -1623,11 +1624,14 @@ public sealed class Game1 : Game
         return evt;
     }
 
-    private Beatmap BuildPreviewBeatmapFromEditor(LevelDocument level, out int previewSimStartMs, int? timelineStartMs = null, int? timelineEndMs = null)
+    private Beatmap BuildPreviewBeatmapFromEditor(LevelDocument level, out int previewSimStartMs, int? timelineStartMs = null, int? timelineEndMs = null, int? currentSongMs = null)
     {
         var useTimelineFilter = timelineStartMs.HasValue && timelineEndMs.HasValue;
         var rangeStart = useTimelineFilter ? Math.Max(0, timelineStartMs!.Value) : 0;
         var rangeEnd = useTimelineFilter ? Math.Max(rangeStart, timelineEndMs!.Value) : int.MaxValue;
+        var simFloorMs = currentSongMs.HasValue
+            ? Math.Max(0, currentSongMs.Value - EditorPreviewMaxBackSimMs)
+            : 0;
         const int noteLookbackMs = 5000;
         var includeStart = 0;
         var minRelevantTimeMs = int.MaxValue;
@@ -1688,24 +1692,39 @@ public sealed class Game1 : Game
             if (bullet.Parameters.TryGetValue("bulletSize", out var bsize)) evt.BulletSize = (float)bsize;
             if (bullet.Parameters.TryGetValue("outlineThickness", out var outT)) evt.OutlineThickness = (float)outT;
             if (bullet.Parameters.TryGetValue("glowIntensity", out var glowI)) evt.GlowIntensity = (float)glowI;
+            if (bullet.Parameters.TryGetValue("telegraphMs", out var telegraphMs)) evt.TelegraphMs = Math.Max(50, (int)Math.Round(telegraphMs));
+            if (bullet.Parameters.TryGetValue("laserDurationMs", out var laserDurationMs)) evt.LaserDurationMs = Math.Max(50, (int)Math.Round(laserDurationMs));
+            if (bullet.Parameters.TryGetValue("laserWidth", out var laserWidth)) evt.LaserWidth = (float)laserWidth;
+            if (bullet.Parameters.TryGetValue("laserLength", out var laserLength)) evt.LaserLength = (float)laserLength;
             if (bullet.Parameters.TryGetValue("shapeId", out var shapeId)) evt.BulletType = PreviewShapeIdToType((int)Math.Round(shapeId));
             if (bullet.Parameters.TryGetValue("motionPatternId", out var motionPatternId)) evt.MotionPattern = PreviewMotionPatternIdToName((int)Math.Round(motionPatternId));
             if (TryPreviewColorFromParams(bullet.Parameters, "primary", out var primaryHex)) evt.Color = primaryHex;
             if (TryPreviewColorFromParams(bullet.Parameters, "outline", out var outlineHex)) evt.OutlineColor = outlineHex;
             if (TryPreviewColorFromParams(bullet.Parameters, "glow", out var glowHex)) evt.GlowColor = glowHex;
 
-            // Do not drop bullets on the left boundary by estimated expire time.
-            // Keep a long lookback window so bullets remain visible until all entities are truly gone.
-            if (useTimelineFilter && evt.TimeMs > rangeEnd)
+            if (useTimelineFilter)
             {
-                continue;
+                var bulletExpireMs = EstimateBulletExpireMs(evt);
+                if (evt.TimeMs > rangeEnd || bulletExpireMs < rangeStart)
+                {
+                    continue;
+                }
+
+                // Cap editor back-simulation range. If a bullet started before the floor but should still be
+                // visible after the floor, spawn it at the floor as an approximation to avoid full-history sim.
+                if (evt.TimeMs < simFloorMs && bulletExpireMs >= simFloorMs)
+                {
+                    evt.TimeMs = simFloorMs;
+                }
             }
 
             minRelevantTimeMs = Math.Min(minRelevantTimeMs, evt.TimeMs);
             beatmap.Bullets.Add(evt);
         }
 
-        previewSimStartMs = minRelevantTimeMs == int.MaxValue ? includeStart : Math.Max(0, minRelevantTimeMs);
+        previewSimStartMs = minRelevantTimeMs == int.MaxValue
+            ? Math.Max(includeStart, simFloorMs)
+            : Math.Max(simFloorMs, Math.Max(0, minRelevantTimeMs));
         return beatmap;
     }
 

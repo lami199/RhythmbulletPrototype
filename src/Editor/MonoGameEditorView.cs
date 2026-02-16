@@ -4,6 +4,7 @@ using Microsoft.Xna.Framework.Input;
 using RhythmbulletPrototype.Models;
 using RhythmbulletPrototype.Rendering;
 using RhythmbulletPrototype.Systems;
+using System.Globalization;
 
 namespace RhythmbulletPrototype.Editor;
 
@@ -19,6 +20,10 @@ public sealed class MonoGameEditorView : IEditorView
     private const float TimelineZoomTrackW = 240f;
     private const int MinTimelineWindowMs = 1000;
     private const int MaxTimelineWindowMs = 7200000;
+    private const int HeavyPreviewMarkThreshold = 700;
+    private const int MaxActiveWorldMarkersDrawn = 220;
+    private const int MaxActiveLabelDrawn = 36;
+    private const int BulletPlacementMarkerLifetimeMs = 200;
 
     private readonly Queue<EditorCommand> _commands = new();
     private readonly Queue<string> _messages = new();
@@ -88,8 +93,13 @@ public sealed class MonoGameEditorView : IEditorView
     private string _glowIntensityInput = "0.12";
     private string _bulletSizeInput = "8";
     private string _movementIntensityInput = "1.00";
+    private string _trajectoryInput = "90";
     private float _bulletSize = 8f;
     private float _movementIntensity = 1f;
+    private float _trajectoryDeg = 90f;
+    private bool _editingTrajectoryDeg;
+    private bool _trajectorySnapEnabled = true;
+    private const float TrajectorySnapStepDeg = 15f;
     private float _pauseToggleBlockSec;
     private float _wheelHue;
     private float _wheelSat = 1f;
@@ -129,6 +139,7 @@ public sealed class MonoGameEditorView : IEditorView
     private static readonly string[] MovementOptions =
     {
         "none",
+        "fountain",
         "left_drift",
         "right_drift",
         "left_to_right",
@@ -191,7 +202,7 @@ public sealed class MonoGameEditorView : IEditorView
             (_staticPatternDropdownOpen ? (PatternVisibleCount * 12 + 4) : 0) +
             (_shapeDropdownOpen ? (PatternVisibleCount * 12 + 4) : 0);
         var songHeight = _songPanelCollapsed ? 0 : (_songDropdownOpen ? (24 + SongVisibleCount * 12) : 24);
-        var colorHeight = 236;
+        var colorHeight = 270;
         var panelHeight = _toolPanelCollapsed ? 0 : (96 + patternHeight + songHeight + colorHeight);
         var toolPanelBounds = new Rectangle((int)panelX, (int)panelY, (int)panelW, panelHeight);
         var movementListTop = movementHeaderY + 22f;
@@ -213,6 +224,10 @@ public sealed class MonoGameEditorView : IEditorView
         var movementSliderRect = new Rectangle((int)(panelX + 190f), (int)colorY + 162, 120, 10);
         var movementSliderHitRect = new Rectangle(movementSliderRect.X - 2, movementSliderRect.Y - 6, movementSliderRect.Width + 4, 22);
         var movementInputRect = new Rectangle(movementSliderRect.Right + 8, (int)colorY + 156, 42, 22);
+        var trajectoryInputRect = new Rectangle((int)(panelX + 190f), (int)colorY + 196, 86, 22);
+        var trajectoryMinusRect = new Rectangle(trajectoryInputRect.Right + 6, trajectoryInputRect.Y, 22, 22);
+        var trajectoryPlusRect = new Rectangle(trajectoryMinusRect.Right + 4, trajectoryInputRect.Y, 22, 22);
+        var trajectorySnapRect = new Rectangle(trajectoryPlusRect.Right + 6, trajectoryInputRect.Y, 68, 22);
         var popupRect = GetColorPopupRect();
         var popupWheelCenter = new Vector2(popupRect.X + 120f, popupRect.Y + 118f);
         const float popupWheelOuterR = 88f;
@@ -473,13 +488,18 @@ public sealed class MonoGameEditorView : IEditorView
             !glowInputRect.Contains((int)mouseVirtual.X, (int)mouseVirtual.Y) &&
             !sizeInputRect.Contains((int)mouseVirtual.X, (int)mouseVirtual.Y) &&
             !sizeSliderHitRect.Contains((int)mouseVirtual.X, (int)mouseVirtual.Y) &&
-            !movementInputRect.Contains((int)mouseVirtual.X, (int)mouseVirtual.Y))
+            !movementInputRect.Contains((int)mouseVirtual.X, (int)mouseVirtual.Y) &&
+            !trajectoryInputRect.Contains((int)mouseVirtual.X, (int)mouseVirtual.Y) &&
+            !trajectoryMinusRect.Contains((int)mouseVirtual.X, (int)mouseVirtual.Y) &&
+            !trajectoryPlusRect.Contains((int)mouseVirtual.X, (int)mouseVirtual.Y) &&
+            !trajectorySnapRect.Contains((int)mouseVirtual.X, (int)mouseVirtual.Y))
         {
             CommitNumericFieldEdits();
             _editingBulletSpeed = false;
             _editingGlowIntensity = false;
             _editingBulletSize = false;
             _editingMovementIntensity = false;
+            _editingTrajectoryDeg = false;
         }
 
         if (_dragBulletSizeSlider)
@@ -737,7 +757,9 @@ public sealed class MonoGameEditorView : IEditorView
                     _editingBulletSpeed = true;
                     _editingGlowIntensity = false;
                     _editingBulletSize = false;
-                    _bulletSpeedInput = ((int)MathF.Round(_bulletSpeed)).ToString();
+                    _editingMovementIntensity = false;
+                    _editingTrajectoryDeg = false;
+                    _bulletSpeedInput = _bulletSpeed.ToString("0.##", CultureInfo.InvariantCulture);
                     return;
                 }
 
@@ -746,6 +768,8 @@ public sealed class MonoGameEditorView : IEditorView
                     _editingGlowIntensity = true;
                     _editingBulletSpeed = false;
                     _editingBulletSize = false;
+                    _editingMovementIntensity = false;
+                    _editingTrajectoryDeg = false;
                     _glowIntensityInput = _glowIntensity.ToString("0.##");
                     return;
                 }
@@ -776,6 +800,7 @@ public sealed class MonoGameEditorView : IEditorView
                     _editingBulletSpeed = false;
                     _editingGlowIntensity = false;
                     _editingBulletSize = false;
+                    _editingTrajectoryDeg = false;
                     _movementIntensityInput = _movementIntensity.ToString("0.00");
                     return;
                 }
@@ -787,6 +812,36 @@ public sealed class MonoGameEditorView : IEditorView
                     _movementIntensityInput = _movementIntensity.ToString("0.00");
                     _editingMovementIntensity = false;
                     _dragMovementIntensitySlider = true;
+                    return;
+                }
+
+                if (trajectoryInputRect.Contains(p))
+                {
+                    _editingTrajectoryDeg = true;
+                    _editingBulletSpeed = false;
+                    _editingGlowIntensity = false;
+                    _editingBulletSize = false;
+                    _editingMovementIntensity = false;
+                    _trajectoryInput = _trajectoryDeg.ToString("0.##", CultureInfo.InvariantCulture);
+                    return;
+                }
+
+                if (trajectoryMinusRect.Contains(p))
+                {
+                    NudgeTrajectory(-1f);
+                    return;
+                }
+
+                if (trajectoryPlusRect.Contains(p))
+                {
+                    NudgeTrajectory(1f);
+                    return;
+                }
+
+                if (trajectorySnapRect.Contains(p))
+                {
+                    _trajectorySnapEnabled = !_trajectorySnapEnabled;
+                    CommitNumericFieldEdits();
                     return;
                 }
             }
@@ -1016,22 +1071,50 @@ public sealed class MonoGameEditorView : IEditorView
 
         if (input.IsKeyPressed(Keys.OemOpenBrackets))
         {
-            _commands.Enqueue(EditorCommand.SeekDelta(ScaledSeekDelta(-50)));
+            if (_editingTrajectoryDeg)
+            {
+                NudgeTrajectory(-5f);
+            }
+            else
+            {
+                _commands.Enqueue(EditorCommand.SeekDelta(ScaledSeekDelta(-50)));
+            }
         }
 
         if (input.IsKeyPressed(Keys.OemCloseBrackets))
         {
-            _commands.Enqueue(EditorCommand.SeekDelta(ScaledSeekDelta(50)));
+            if (_editingTrajectoryDeg)
+            {
+                NudgeTrajectory(5f);
+            }
+            else
+            {
+                _commands.Enqueue(EditorCommand.SeekDelta(ScaledSeekDelta(50)));
+            }
         }
 
         if (input.IsKeyPressed(Keys.OemSemicolon))
         {
-            _commands.Enqueue(EditorCommand.SeekDelta(ScaledSeekDelta(-1)));
+            if (_editingTrajectoryDeg)
+            {
+                NudgeTrajectory(-1f);
+            }
+            else
+            {
+                _commands.Enqueue(EditorCommand.SeekDelta(ScaledSeekDelta(-1)));
+            }
         }
 
         if (input.IsKeyPressed(Keys.OemQuotes))
         {
-            _commands.Enqueue(EditorCommand.SeekDelta(ScaledSeekDelta(1)));
+            if (_editingTrajectoryDeg)
+            {
+                NudgeTrajectory(1f);
+            }
+            else
+            {
+                _commands.Enqueue(EditorCommand.SeekDelta(ScaledSeekDelta(1)));
+            }
         }
 
         if (input.IsKeyPressed(Keys.O))
@@ -1462,7 +1545,7 @@ public sealed class MonoGameEditorView : IEditorView
             (_staticPatternDropdownOpen ? PatternVisibleCount * 12 + 4 : 0) +
             (_shapeDropdownOpen ? PatternVisibleCount * 12 + 4 : 0);
         var songHeight = _songPanelCollapsed ? 0 : (_songDropdownOpen ? SongVisibleCount * 12 + 24 : 24);
-        var colorHeight = 236;
+        var colorHeight = 270;
         var panelHeight = _toolPanelCollapsed ? 0 : (96 + patternHeight + colorHeight + songHeight);
 
         render.DrawRect(spriteBatch, panelHeaderRect, new Color(10, 12, 18, 190));
@@ -1577,18 +1660,26 @@ public sealed class MonoGameEditorView : IEditorView
         var sizeInputRect = new Rectangle(sizeSliderRect.Right + 8, (int)colorY + 114, 42, 22);
         var movementSliderRect = new Rectangle((int)(x + 190f), (int)colorY + 162, 120, 10);
         var movementInputRect = new Rectangle(movementSliderRect.Right + 8, (int)colorY + 156, 42, 22);
+        var trajectoryInputRect = new Rectangle((int)(x + 190f), (int)colorY + 196, 86, 22);
+        var trajectoryMinusRect = new Rectangle(trajectoryInputRect.Right + 6, trajectoryInputRect.Y, 22, 22);
+        var trajectoryPlusRect = new Rectangle(trajectoryMinusRect.Right + 4, trajectoryInputRect.Y, 22, 22);
+        var trajectorySnapRect = new Rectangle(trajectoryPlusRect.Right + 6, trajectoryInputRect.Y, 68, 22);
         DrawMenuText(spriteBatch, text, "Bullet Speed", new Vector2(x + 150f, colorY + 18f), new Color(210, 220, 235), 1.05f);
         DrawMenuText(spriteBatch, text, "Glow Intensity", new Vector2(x + 150f, colorY + 58f), new Color(210, 220, 235), 1.05f);
         DrawMenuText(spriteBatch, text, "Bullet Size", new Vector2(x + 150f, colorY + 98f), new Color(210, 220, 235), 1.05f);
         DrawMenuText(spriteBatch, text, "Move Intensity", new Vector2(x + 150f, colorY + 150f), new Color(210, 220, 235), 1.05f);
+        DrawMenuText(spriteBatch, text, "Trajectory (deg)", new Vector2(x + 150f, colorY + 190f), new Color(210, 220, 235), 1.05f);
         render.DrawRect(spriteBatch, speedInputRect, _editingBulletSpeed ? new Color(55, 88, 130, 235) : new Color(30, 36, 50, 235));
         render.DrawRect(spriteBatch, glowInputRect, _editingGlowIntensity ? new Color(55, 88, 130, 235) : new Color(30, 36, 50, 235));
         render.DrawRect(spriteBatch, sizeInputRect, _editingBulletSize ? new Color(55, 88, 130, 235) : new Color(30, 36, 50, 235));
-        var speedText = _editingBulletSpeed ? _bulletSpeedInput : ((int)MathF.Round(_bulletSpeed)).ToString();
+        render.DrawRect(spriteBatch, trajectoryInputRect, _editingTrajectoryDeg ? new Color(55, 88, 130, 235) : new Color(30, 36, 50, 235));
+        var speedText = _editingBulletSpeed ? _bulletSpeedInput : _bulletSpeed.ToString("0.##", CultureInfo.InvariantCulture);
         var glowText = _editingGlowIntensity ? _glowIntensityInput : _glowIntensity.ToString("0.##");
         var sizeText = _editingBulletSize ? _bulletSizeInput : ((int)MathF.Round(_bulletSize)).ToString();
+        var trajectoryText = _editingTrajectoryDeg ? _trajectoryInput : _trajectoryDeg.ToString("0.##", CultureInfo.InvariantCulture);
         DrawMenuText(spriteBatch, text, speedText, new Vector2(speedInputRect.X + 4, speedInputRect.Y + 4), Color.White, 1.1f);
         DrawMenuText(spriteBatch, text, glowText, new Vector2(glowInputRect.X + 4, glowInputRect.Y + 4), Color.White, 1.1f);
+        DrawMenuText(spriteBatch, text, trajectoryText, new Vector2(trajectoryInputRect.X + 4, trajectoryInputRect.Y + 4), Color.White, 1.1f);
         render.DrawRect(spriteBatch, sizeSliderRect, new Color(30, 36, 50, 235));
         render.DrawRect(spriteBatch, new Rectangle(sizeSliderRect.X, sizeSliderRect.Y, sizeSliderRect.Width, 1), new Color(140, 155, 185, 210));
         var sizeT = Math.Clamp((_bulletSize - 2f) / 62f, 0f, 1f);
@@ -1603,6 +1694,9 @@ public sealed class MonoGameEditorView : IEditorView
         render.DrawRect(spriteBatch, movementInputRect, _editingMovementIntensity ? new Color(55, 88, 130, 235) : new Color(30, 36, 50, 235));
         var moveText = _editingMovementIntensity ? _movementIntensityInput : _movementIntensity.ToString("0.00");
         DrawMenuText(spriteBatch, text, moveText, new Vector2(movementInputRect.X + 4f, movementInputRect.Y + 4f), Color.White, 1.05f);
+        DrawButton(spriteBatch, render, text, trajectoryMinusRect, "-", false);
+        DrawButton(spriteBatch, render, text, trajectoryPlusRect, "+", false);
+        DrawButton(spriteBatch, render, text, trajectorySnapRect, _trajectorySnapEnabled ? "Snap ON" : "Snap OFF", _trajectorySnapEnabled);
     }
 
     private static void DrawListHeader(SpriteBatch spriteBatch, RenderHelpers render, BitmapTextRenderer text, Rectangle rect, string label, bool open)
@@ -1755,11 +1849,19 @@ public sealed class MonoGameEditorView : IEditorView
         var p = hoveringMovingPattern ? staticBase : hovered;
         var motionPattern = hoveringMovingPattern ? hovered : _selectedMovingPattern;
         var previewShape = string.IsNullOrWhiteSpace(_hoverShapeOverride) ? _selectedBulletShape : _hoverShapeOverride;
-        var count = p.Contains("wall") || p.Contains("grid") || p.Contains("lattice") ? 20 :
-            p.Contains("fan") || p.Contains("arc") ? 9 :
-            p.Contains("spiral") || p.Contains("helix") || p.Contains("vortex") || p.Contains("pinwheel") ? 18 :
-            p.Contains("ring") || p.Contains("radial") || p.Contains("flower") || p.Contains("star") ? 16 : 12;
-        var speed = Math.Clamp(_bulletSpeed, 80f, 520f);
+        var count = p switch
+        {
+            "ring_8" => 8,
+            "ring_12" => 12,
+            "ring_16" => 16,
+            "ring_32" => 32,
+            _ when p.Contains("wall") || p.Contains("grid") || p.Contains("lattice") => 20,
+            _ when p.Contains("fan") || p.Contains("arc") => 9,
+            _ when p.Contains("spiral") || p.Contains("helix") || p.Contains("vortex") || p.Contains("pinwheel") => 18,
+            _ when p.Contains("ring") || p.Contains("radial") || p.Contains("flower") || p.Contains("star") => 16,
+            _ => 12
+        };
+        var speed = Math.Clamp(_bulletSpeed, 0.1f, 520f);
 
         return new BulletEvent
         {
@@ -1822,6 +1924,7 @@ public sealed class MonoGameEditorView : IEditorView
         var now = _model.CurrentTimeMs;
         var startMs = _timelineViewStartMs;
         var timelineY = GetTimelineY();
+        var visibleMarks = new List<PreviewMark>(Math.Min(_model.PreviewMarks.Count, 2048));
         foreach (var mark in _model.PreviewMarks)
         {
             var startX = TimelineX + ((mark.StartMs - startMs) / (float)_timelineWindowMs) * TimelineW;
@@ -1830,19 +1933,52 @@ public sealed class MonoGameEditorView : IEditorView
             {
                 continue;
             }
+            visibleMarks.Add(mark);
+        }
 
-            var segmentColor = mark.Kind == LevelEditorConstants.EventKindBullet
-                ? new Color(255, 130, 130, 150)
-                : new Color(130, 210, 255, 150);
-            var sx = (int)Math.Clamp(startX, TimelineX, TimelineX + TimelineW);
-            var ex = (int)Math.Clamp(endX, TimelineX, TimelineX + TimelineW);
-            render.DrawRect(spriteBatch, new Rectangle(sx, (int)timelineY - 5, Math.Max(2, ex - sx), 3), segmentColor);
-            var startMarkerX = (int)Math.Clamp(startX, TimelineX, TimelineX + TimelineW);
-            render.DrawRect(spriteBatch, new Rectangle(startMarkerX - 1, (int)timelineY - 8, 2, 7), new Color(255, 255, 255, 170));
+        var heavyMode = visibleMarks.Count >= HeavyPreviewMarkThreshold;
+        if (heavyMode)
+        {
+            DrawPreviewMarksBatchedTimeline(spriteBatch, render, visibleMarks, startMs, timelineY);
+        }
+        else
+        {
+            foreach (var mark in visibleMarks)
+            {
+                var startX = TimelineX + ((mark.StartMs - startMs) / (float)_timelineWindowMs) * TimelineW;
+                var endX = TimelineX + ((mark.EndMs - startMs) / (float)_timelineWindowMs) * TimelineW;
 
+                var segmentColor = mark.Kind == LevelEditorConstants.EventKindBullet
+                    ? new Color(255, 130, 130, 150)
+                    : new Color(130, 210, 255, 150);
+                var sx = (int)Math.Clamp(startX, TimelineX, TimelineX + TimelineW);
+                var ex = (int)Math.Clamp(endX, TimelineX, TimelineX + TimelineW);
+                render.DrawRect(spriteBatch, new Rectangle(sx, (int)timelineY - 5, Math.Max(2, ex - sx), 3), segmentColor);
+                var startMarkerX = (int)Math.Clamp(startX, TimelineX, TimelineX + TimelineW);
+                render.DrawRect(spriteBatch, new Rectangle(startMarkerX - 1, (int)timelineY - 8, 2, 7), new Color(255, 255, 255, 170));
+            }
+        }
+
+        var activeWorldDrawn = 0;
+        var activeLabelDrawn = 0;
+        for (var i = 0; i < visibleMarks.Count; i++)
+        {
+            var mark = visibleMarks[i];
             if (now < mark.StartMs || now > mark.EndMs)
             {
                 continue;
+            }
+
+            // Bullet placement world markers are short-lived to reduce editor clutter.
+            if (mark.Kind == LevelEditorConstants.EventKindBullet &&
+                now > mark.StartMs + BulletPlacementMarkerLifetimeMs)
+            {
+                continue;
+            }
+
+            if (activeWorldDrawn >= MaxActiveWorldMarkersDrawn)
+            {
+                break;
             }
 
             var lifeT = (now - mark.StartMs) / (float)Math.Max(1, mark.EndMs - mark.StartMs);
@@ -1855,7 +1991,62 @@ public sealed class MonoGameEditorView : IEditorView
 
             render.DrawCircleOutline(spriteBatch, new Vector2(px, py), 12f, 2f, c);
             render.DrawCircleFilled(spriteBatch, new Vector2(px, py), 3.8f, Color.White * alpha);
-            DrawMenuText(spriteBatch, text, mark.Label, new Vector2(px + 10f, py - 8f), Color.White * alpha, 1.2f);
+            activeWorldDrawn++;
+
+            if (!heavyMode && activeLabelDrawn < MaxActiveLabelDrawn)
+            {
+                DrawMenuText(spriteBatch, text, mark.Label, new Vector2(px + 10f, py - 8f), Color.White * alpha, 1.2f);
+                activeLabelDrawn++;
+            }
+        }
+    }
+
+    private void DrawPreviewMarksBatchedTimeline(SpriteBatch spriteBatch, RenderHelpers render, List<PreviewMark> visibleMarks, int startMs, float timelineY)
+    {
+        const int bins = 200;
+        var bulletBins = new byte[bins];
+        var noteBins = new byte[bins];
+
+        for (var i = 0; i < visibleMarks.Count; i++)
+        {
+            var mark = visibleMarks[i];
+            var x0 = TimelineX + ((mark.StartMs - startMs) / (float)_timelineWindowMs) * TimelineW;
+            var x1 = TimelineX + ((mark.EndMs - startMs) / (float)_timelineWindowMs) * TimelineW;
+            var clamped0 = Math.Clamp(x0, TimelineX, TimelineX + TimelineW);
+            var clamped1 = Math.Clamp(x1, TimelineX, TimelineX + TimelineW);
+            var b0 = (int)MathF.Floor(((clamped0 - TimelineX) / TimelineW) * bins);
+            var b1 = (int)MathF.Ceiling(((clamped1 - TimelineX) / TimelineW) * bins);
+            b0 = Math.Clamp(b0, 0, bins - 1);
+            b1 = Math.Clamp(b1, 0, bins - 1);
+
+            for (var b = b0; b <= b1; b++)
+            {
+                if (mark.Kind == LevelEditorConstants.EventKindBullet)
+                {
+                    if (bulletBins[b] < byte.MaxValue) bulletBins[b]++;
+                }
+                else
+                {
+                    if (noteBins[b] < byte.MaxValue) noteBins[b]++;
+                }
+            }
+        }
+
+        var binW = TimelineW / bins;
+        for (var i = 0; i < bins; i++)
+        {
+            var x = (int)MathF.Round(TimelineX + i * binW);
+            var w = Math.Max(1, (int)MathF.Ceiling(binW));
+            if (bulletBins[i] > 0)
+            {
+                var a = Math.Clamp(80 + bulletBins[i] * 2, 80, 190);
+                render.DrawRect(spriteBatch, new Rectangle(x, (int)timelineY - 5, w, 3), new Color(255, 130, 130, a));
+            }
+            if (noteBins[i] > 0)
+            {
+                var a = Math.Clamp(80 + noteBins[i] * 2, 80, 190);
+                render.DrawRect(spriteBatch, new Rectangle(x, (int)timelineY - 10, w, 3), new Color(130, 210, 255, a));
+            }
         }
     }
 
@@ -1942,7 +2133,8 @@ public sealed class MonoGameEditorView : IEditorView
         {
             ["speed"] = _bulletSpeed,
             ["count"] = 12,
-            ["directionDeg"] = 90,
+            ["directionDeg"] = _trajectoryDeg,
+            ["trajectoryDeg"] = _trajectoryDeg,
             ["bulletSize"] = SnapBulletSize(_bulletSize),
             ["shapeId"] = shapeIndex,
             ["primaryR"] = _primaryR,
@@ -1975,6 +2167,7 @@ public sealed class MonoGameEditorView : IEditorView
         return option switch
         {
             "none" => string.Empty,
+            "fountain" => "fountain_arc",
             "left_drift" => "left_drift",
             "right_drift" => "right_drift",
             "left_to_right" => "sinusoidal_path_deviation",
@@ -2132,7 +2325,7 @@ public sealed class MonoGameEditorView : IEditorView
     {
         if (_editingBulletSpeed)
         {
-            HandleNumericInputString(input, ref _bulletSpeedInput, allowDecimal: false);
+            HandleNumericInputString(input, ref _bulletSpeedInput, allowDecimal: true);
         }
         else if (_editingGlowIntensity)
         {
@@ -2146,6 +2339,10 @@ public sealed class MonoGameEditorView : IEditorView
         {
             HandleNumericInputString(input, ref _movementIntensityInput, allowDecimal: true);
         }
+        else if (_editingTrajectoryDeg)
+        {
+            HandleNumericInputString(input, ref _trajectoryInput, allowDecimal: true);
+        }
 
         if (input.IsKeyPressed(Keys.Enter))
         {
@@ -2154,27 +2351,30 @@ public sealed class MonoGameEditorView : IEditorView
             _editingGlowIntensity = false;
             _editingBulletSize = false;
             _editingMovementIntensity = false;
+            _editingTrajectoryDeg = false;
             return;
         }
 
         if (input.IsKeyPressed(Keys.Escape))
         {
-            _bulletSpeedInput = ((int)MathF.Round(_bulletSpeed)).ToString();
+            _bulletSpeedInput = _bulletSpeed.ToString("0.##", CultureInfo.InvariantCulture);
             _glowIntensityInput = _glowIntensity.ToString("0.##");
             _bulletSizeInput = ((int)MathF.Round(_bulletSize)).ToString();
             _movementIntensityInput = _movementIntensity.ToString("0.00");
+            _trajectoryInput = _trajectoryDeg.ToString("0.##", CultureInfo.InvariantCulture);
             _editingBulletSpeed = false;
             _editingGlowIntensity = false;
             _editingBulletSize = false;
             _editingMovementIntensity = false;
+            _editingTrajectoryDeg = false;
         }
     }
 
     private void CommitNumericFieldEdits()
     {
-        if (int.TryParse(_bulletSpeedInput, out var speedParsed))
+        if (TryParseFloatInvariant(_bulletSpeedInput, out var speedParsed))
         {
-            _bulletSpeed = Math.Clamp(speedParsed, 60f, 2000f);
+            _bulletSpeed = Math.Clamp(speedParsed, 0.1f, 2000f);
         }
 
         if (float.TryParse(_glowIntensityInput, out var glowParsed))
@@ -2192,10 +2392,20 @@ public sealed class MonoGameEditorView : IEditorView
             _movementIntensity = Math.Clamp(movementParsed, 0f, 2f);
         }
 
-        _bulletSpeedInput = ((int)MathF.Round(_bulletSpeed)).ToString();
+        if (TryParseFloatInvariant(_trajectoryInput, out var trajectoryParsed))
+        {
+            _trajectoryDeg = NormalizeDegrees(trajectoryParsed);
+            if (_trajectorySnapEnabled)
+            {
+                _trajectoryDeg = SnapDegrees(_trajectoryDeg, TrajectorySnapStepDeg);
+            }
+        }
+
+        _bulletSpeedInput = _bulletSpeed.ToString("0.##", CultureInfo.InvariantCulture);
         _glowIntensityInput = _glowIntensity.ToString("0.##");
         _bulletSizeInput = ((int)MathF.Round(_bulletSize)).ToString();
         _movementIntensityInput = _movementIntensity.ToString("0.00");
+        _trajectoryInput = _trajectoryDeg.ToString("0.##", CultureInfo.InvariantCulture);
     }
 
     private static float SnapBulletSize(float raw)
@@ -2258,6 +2468,39 @@ public sealed class MonoGameEditorView : IEditorView
         {
             value += c;
         }
+    }
+
+    private void NudgeTrajectory(float deltaDeg)
+    {
+        CommitNumericFieldEdits();
+        _trajectoryDeg = NormalizeDegrees(_trajectoryDeg + deltaDeg);
+        if (_trajectorySnapEnabled)
+        {
+            _trajectoryDeg = SnapDegrees(_trajectoryDeg, TrajectorySnapStepDeg);
+        }
+        _trajectoryInput = _trajectoryDeg.ToString("0.##", CultureInfo.InvariantCulture);
+    }
+
+    private static float NormalizeDegrees(float deg)
+    {
+        var d = deg % 360f;
+        if (d < 0f)
+        {
+            d += 360f;
+        }
+        return d;
+    }
+
+    private static float SnapDegrees(float deg, float stepDeg)
+    {
+        var step = Math.Max(0.001f, stepDeg);
+        return NormalizeDegrees(MathF.Round(deg / step) * step);
+    }
+
+    private static bool TryParseFloatInvariant(string text, out float value)
+    {
+        return float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value) ||
+               float.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out value);
     }
 
     private static Color HsvToColor(float h, float s, float v)

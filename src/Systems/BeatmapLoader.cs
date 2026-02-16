@@ -126,9 +126,9 @@ public sealed class BeatmapLoader
                 bullet.Count = 1;
             }
 
-            if (bullet.Speed <= 0f)
+            if (bullet.Speed < 0.1f)
             {
-                bullet.Speed = 220f;
+                bullet.Speed = 0.1f;
             }
 
             bullet.IntervalMs = Math.Clamp(bullet.IntervalMs, 10, 1000);
@@ -140,6 +140,10 @@ public sealed class BeatmapLoader
             bullet.GlowIntensity = bullet.GlowIntensity.HasValue ? Math.Clamp(bullet.GlowIntensity.Value, 0f, 2f) : null;
             bullet.DirectionDeg = bullet.DirectionDeg.HasValue ? Math.Clamp(bullet.DirectionDeg.Value, -720f, 720f) : null;
             bullet.MovementIntensity = bullet.MovementIntensity.HasValue ? Math.Clamp(bullet.MovementIntensity.Value, 0f, 3f) : null;
+            bullet.TelegraphMs = bullet.TelegraphMs.HasValue ? Math.Clamp(bullet.TelegraphMs.Value, 50, 5000) : null;
+            bullet.LaserDurationMs = bullet.LaserDurationMs.HasValue ? Math.Clamp(bullet.LaserDurationMs.Value, 50, 4000) : null;
+            bullet.LaserWidth = bullet.LaserWidth.HasValue ? Math.Clamp(bullet.LaserWidth.Value, 4f, 220f) : null;
+            bullet.LaserLength = bullet.LaserLength.HasValue ? Math.Clamp(bullet.LaserLength.Value, 100f, 2600f) : null;
             bullet.X = bullet.X.HasValue ? Math.Clamp(bullet.X.Value, 0f, 1f) : null;
             bullet.Y = bullet.Y.HasValue ? Math.Clamp(bullet.Y.Value, 0f, 1f) : null;
 
