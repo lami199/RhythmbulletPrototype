@@ -20,6 +20,7 @@ public sealed class MonoGameEditorView : IEditorView
     private const float TimelineZoomTrackW = 240f;
     private const int MinTimelineWindowMs = 1000;
     private const int MaxTimelineWindowMs = 7200000;
+    private const int MinTimelineTotalMsNoSong = 480000;
     private const int HeavyPreviewMarkThreshold = 700;
     private const int MaxActiveWorldMarkersDrawn = 220;
     private const int MaxActiveLabelDrawn = 36;
@@ -2649,9 +2650,10 @@ public sealed class MonoGameEditorView : IEditorView
         }
 
         var songDuration = Math.Max(0, _model.SongDurationMs);
+        var noSongFallbackMs = songDuration > 0 ? 0 : MinTimelineTotalMsNoSong;
         var maxEntity = Math.Max(_model.LastEntityEndMs, _model.CurrentTimeMs);
         var visibleEnd = _timelineViewStartMs + _timelineWindowMs;
-        var timelineEnd = Math.Max(_model.TimelineEndMs, Math.Max(songDuration, Math.Max(maxEntity, visibleEnd)));
+        var timelineEnd = Math.Max(_model.TimelineEndMs, Math.Max(noSongFallbackMs, Math.Max(songDuration, Math.Max(maxEntity, visibleEnd))));
         return Math.Max(MinTimelineWindowMs, timelineEnd);
     }
 
@@ -2674,7 +2676,7 @@ public sealed class MonoGameEditorView : IEditorView
         }
 
         var visibleFraction = Math.Clamp(_timelineWindowMs / (float)Math.Max(1, totalMs), 0.01f, 1f);
-        var thumbWidth = Math.Clamp((int)MathF.Round(trackRect.Width * visibleFraction), 18, trackRect.Width);
+        var thumbWidth = Math.Clamp((int)MathF.Round(trackRect.Width * visibleFraction), 30, trackRect.Width);
         var travel = Math.Max(1, trackRect.Width - thumbWidth);
         var startT = Math.Clamp(_timelineViewStartMs / (float)maxStart, 0f, 1f);
         var thumbX = trackRect.X + (int)MathF.Round(startT * travel);

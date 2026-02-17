@@ -11,10 +11,6 @@ public enum Judgment
 
 public static class JudgmentValues
 {
-    public const int PerfectMs = 40;
-    public const int GoodMs = 90;
-    public const int OkMs = 140;
-
     public static int ToBaseScore(Judgment j)
     {
         return j switch

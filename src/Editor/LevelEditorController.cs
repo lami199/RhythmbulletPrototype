@@ -9,6 +9,8 @@ public sealed class LevelEditorController
     private const int BulletDeleteWindowMs = 100;
     private const int SimulatedBulletMaxMs = 600000;
     private const int SimulatedBulletStepMs = 16;
+    private const int MinTimelineMsWithSong = 30000;
+    private const int MinTimelineMsNoSong = 480000;
     private readonly IAudioTransport _transport;
     private readonly IEditorView _view;
     private readonly LevelSerializer _serializer;
@@ -100,8 +102,9 @@ public sealed class LevelEditorController
     {
         EnsureCachesUpToDate();
         var songDuration = Math.Max(0, _transport.SongDurationMs);
+        var minTimelineMs = songDuration > 0 ? MinTimelineMsWithSong : MinTimelineMsNoSong;
         var timelineEnd = Math.Max(
-            Math.Max(30000, _level.LevelLengthMs),
+            Math.Max(minTimelineMs, _level.LevelLengthMs),
             Math.Max(songDuration, Math.Max(_cachedMaxEventTimeMs + 2000, _transport.CurrentTimeMs + 2000)));
         var songs = GetSongOptionsCached();
         return new EditorViewModel
@@ -758,6 +761,8 @@ public sealed class LevelEditorController
         if (bullet.Parameters.TryGetValue("angleStepDeg", out var step)) evt.AngleStepDeg = (float)step;
         if (bullet.Parameters.TryGetValue("directionDeg", out var direction)) evt.DirectionDeg = (float)direction;
         if (bullet.Parameters.TryGetValue("movementIntensity", out var movement)) evt.MovementIntensity = (float)movement;
+        if (bullet.Parameters.TryGetValue("ringExpandDistance", out var ringExpandDistance)) evt.RingExpandDistance = (float)Math.Max(0, ringExpandDistance);
+        if (!evt.RingExpandDistance.HasValue && bullet.Parameters.TryGetValue("expansionDistance", out var expansionDistance)) evt.RingExpandDistance = (float)Math.Max(0, expansionDistance);
         if (bullet.Parameters.TryGetValue("radius", out var radius)) evt.Radius = (float)radius;
         if (bullet.Parameters.TryGetValue("bulletSize", out var bsize)) evt.BulletSize = (float)bsize;
         if (bullet.Parameters.TryGetValue("outlineThickness", out var outT)) evt.OutlineThickness = (float)outT;
@@ -948,6 +953,8 @@ public sealed class LevelEditorController
             if (b.Parameters.TryGetValue("angleStepDeg", out var step)) evt.AngleStepDeg = (float)step;
             if (b.Parameters.TryGetValue("directionDeg", out var direction)) evt.DirectionDeg = (float)direction;
             if (b.Parameters.TryGetValue("movementIntensity", out var movement)) evt.MovementIntensity = (float)movement;
+            if (b.Parameters.TryGetValue("ringExpandDistance", out var ringExpandDistance)) evt.RingExpandDistance = (float)Math.Max(0, ringExpandDistance);
+            if (!evt.RingExpandDistance.HasValue && b.Parameters.TryGetValue("expansionDistance", out var expansionDistance)) evt.RingExpandDistance = (float)Math.Max(0, expansionDistance);
             if (b.Parameters.TryGetValue("radius", out var radius)) evt.Radius = (float)radius;
             if (b.Parameters.TryGetValue("bulletSize", out var bsize)) evt.BulletSize = (float)bsize;
             if (b.Parameters.TryGetValue("outlineThickness", out var outT)) evt.OutlineThickness = (float)outT;

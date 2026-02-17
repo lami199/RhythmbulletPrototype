@@ -7,14 +7,19 @@ namespace RhythmbulletPrototype.Systems;
 
 public sealed class NoteSystem
 {
+    private const int TimingHistogramBucketCount = 9;
     private readonly List<RuntimeTapNote> _tapNotes = new();
     private readonly List<RuntimeDragNote> _dragNotes = new();
     private readonly Queue<AutoMissFeedback> _autoMisses = new();
+    private readonly Queue<NoteJudgmentEvent> _judgments = new();
     private readonly List<HitCircleVfx> _hitCircleVfx = new();
+    private readonly int[] _timingHistogram = new int[TimingHistogramBucketCount];
+    private HitWindows _hitWindows = HitWindows.Default;
 
     public float CircleRadius { get; private set; } = 42f;
     public int ApproachMs { get; private set; } = 900;
-    public int HitWindowMs => JudgmentValues.OkMs;
+    public int HitWindowMs => _hitWindows.MissMs;
+    public HitWindows CurrentHitWindows => _hitWindows;
     public int NumberCycle { get; private set; } = 4;
     public bool ShowNumbers { get; private set; } = true;
 
@@ -26,6 +31,10 @@ public sealed class NoteSystem
     public int OkCount { get; private set; }
     public int MissCount { get; private set; }
     public float LastHitDeltaMs { get; private set; }
+    public int EarlyHitCount { get; private set; }
+    public int LateHitCount { get; private set; }
+    public int OnTimeHitCount { get; private set; }
+    public IReadOnlyList<int> TimingHistogram => _timingHistogram;
 
     public int NextObjectIndex
     {
@@ -63,12 +72,14 @@ public sealed class NoteSystem
         _tapNotes.Clear();
         _dragNotes.Clear();
         _autoMisses.Clear();
+        _judgments.Clear();
         _hitCircleVfx.Clear();
 
         CircleRadius = beatmap.CircleRadius;
         ApproachMs = beatmap.ApproachMs;
         NumberCycle = Math.Max(1, beatmap.NumberCycle);
         ShowNumbers = beatmap.ShowNumbers;
+        _hitWindows = HitWindows.Normalize(beatmap.HitWindows);
 
         foreach (var n in beatmap.Notes)
         {
@@ -94,6 +105,10 @@ public sealed class NoteSystem
         OkCount = 0;
         MissCount = 0;
         LastHitDeltaMs = 0f;
+        EarlyHitCount = 0;
+        LateHitCount = 0;
+        OnTimeHitCount = 0;
+        Array.Clear(_timingHistogram, 0, _timingHistogram.Length);
     }
 
     public void Update(float dt, int songTimeMs, Vector2 cursorPos, bool leftDown, bool leftReleased)
@@ -110,7 +125,7 @@ public sealed class NoteSystem
                 var note = _tapNotes[i];
                 note.Resolved = true;
                 _tapNotes[i] = note;
-                RegisterJudgment(Judgment.Miss, 0);
+                RegisterJudgment(Judgment.Miss, 0, songTimeMs);
                 _autoMisses.Enqueue(new AutoMissFeedback(note.Position));
             }
         }
@@ -125,7 +140,7 @@ public sealed class NoteSystem
 
             if (songTimeMs > drag.EndMs + HitWindowMs)
             {
-                RegisterJudgment(Judgment.Miss, 0);
+                RegisterJudgment(Judgment.Miss, 0, songTimeMs);
                 _autoMisses.Enqueue(new AutoMissFeedback(drag.Points[^1]));
                 drag.Resolved = true;
                 drag.Dragging = false;
@@ -143,18 +158,18 @@ public sealed class NoteSystem
                 if (leftReleased && drag.Progress >= 0.98f)
                 {
                     var deltaMs = songTimeMs - drag.EndMs;
-                    var judgment = Judge(Math.Abs(deltaMs));
+                    var judgment = ResolveJudgmentFromDelta(Math.Abs(deltaMs));
                     if (judgment == Judgment.Miss)
                     {
                         judgment = Judgment.Ok;
                     }
 
-                    RegisterJudgment(judgment, deltaMs);
+                    RegisterJudgment(judgment, deltaMs, songTimeMs);
                     QueueHitVfx(drag.Points[^1], drag.PipeRadius * 0.7f);
                 }
                 else
                 {
-                    RegisterJudgment(Judgment.Miss, 0);
+                    RegisterJudgment(Judgment.Miss, 0, songTimeMs);
                     _autoMisses.Enqueue(new AutoMissFeedback(drag.Points[^1]));
                 }
 
@@ -177,7 +192,7 @@ public sealed class NoteSystem
             }
             else if (songTimeMs - drag.LastValidDragMs > 420)
             {
-                RegisterJudgment(Judgment.Miss, 0);
+                RegisterJudgment(Judgment.Miss, 0, songTimeMs);
                 _autoMisses.Enqueue(new AutoMissFeedback(drag.Points[^1]));
                 drag.Resolved = true;
                 drag.Dragging = false;
@@ -259,14 +274,14 @@ public sealed class NoteSystem
         {
             var chosen = candidate.Value;
             var deltaMs = songTimeMs - chosen.TimeMs;
-            var judgment = Judge(Math.Abs(deltaMs));
+            var judgment = ResolveJudgmentFromDelta(Math.Abs(deltaMs));
 
             chosen.Resolved = true;
             _tapNotes[candidateIndex] = chosen;
 
-            RegisterJudgment(judgment, deltaMs);
+            RegisterJudgment(judgment, deltaMs, songTimeMs);
             QueueHitVfx(chosen.Position, CircleRadius);
-            result = new HitAttemptResult(judgment, deltaMs, chosen.Position);
+            result = new HitAttemptResult(judgment, deltaMs, GetJudgmentWindowMs(judgment), chosen.Position);
             return true;
         }
 
@@ -305,6 +320,11 @@ public sealed class NoteSystem
     public bool TryDequeueAutoMiss(out AutoMissFeedback miss)
     {
         return _autoMisses.TryDequeue(out miss);
+    }
+
+    public bool TryDequeueJudgment(out NoteJudgmentEvent judgmentEvent)
+    {
+        return _judgments.TryDequeue(out judgmentEvent);
     }
 
     public void Draw(SpriteBatch spriteBatch, RenderHelpers render, BitmapTextRenderer text, int songTimeMs, bool showHitboxes)
@@ -461,9 +481,13 @@ public sealed class NoteSystem
         });
     }
 
-    private void RegisterJudgment(Judgment judgment, int deltaMs)
+    private void RegisterJudgment(Judgment judgment, int deltaMs, int songTimeMs)
     {
         LastHitDeltaMs = deltaMs;
+        if (judgment is Judgment.Perfect or Judgment.Good or Judgment.Ok)
+        {
+            RecordTimingTelemetry(deltaMs);
+        }
 
         switch (judgment)
         {
@@ -490,14 +514,39 @@ public sealed class NoteSystem
         var baseScore = JudgmentValues.ToBaseScore(judgment);
         var multiplier = Math.Clamp(1f + Combo / 25f, 1f, 4f);
         Score += (int)MathF.Round(baseScore * multiplier);
+        _judgments.Enqueue(new NoteJudgmentEvent(
+            judgment,
+            deltaMs,
+            GetJudgmentWindowMs(judgment),
+            songTimeMs));
     }
 
-    private static Judgment Judge(int absDtMs)
+    private Judgment ResolveJudgmentFromDelta(int absDtMs)
     {
-        if (absDtMs <= JudgmentValues.PerfectMs) return Judgment.Perfect;
-        if (absDtMs <= JudgmentValues.GoodMs) return Judgment.Good;
-        if (absDtMs <= JudgmentValues.OkMs) return Judgment.Ok;
-        return Judgment.Miss;
+        return Models.HitWindows.ResolveJudgment(absDtMs, _hitWindows);
+    }
+
+    private int GetJudgmentWindowMs(Judgment judgment)
+    {
+        return judgment switch
+        {
+            Judgment.Perfect => _hitWindows.PerfectMs,
+            Judgment.Good => _hitWindows.GoodMs,
+            Judgment.Ok => _hitWindows.OkMs,
+            _ => _hitWindows.MissMs
+        };
+    }
+
+    private void RecordTimingTelemetry(int deltaMs)
+    {
+        if (deltaMs < -12) EarlyHitCount++;
+        else if (deltaMs > 12) LateHitCount++;
+        else OnTimeHitCount++;
+
+        var clamped = Math.Clamp(deltaMs, -HitWindowMs, HitWindowMs);
+        var t = (clamped + HitWindowMs) / (float)Math.Max(1, HitWindowMs * 2);
+        var idx = Math.Clamp((int)MathF.Floor(t * TimingHistogramBucketCount), 0, TimingHistogramBucketCount - 1);
+        _timingHistogram[idx]++;
     }
 
     private static void DrawCenteredNumber(SpriteBatch spriteBatch, BitmapTextRenderer text, int number, Vector2 center, float noteRadius)
@@ -659,9 +708,15 @@ public sealed class NoteSystem
     }
 }
 
-public readonly record struct HitAttemptResult(Judgment Judgment, int DeltaMs, Vector2 Position)
+public readonly record struct HitAttemptResult(Judgment Judgment, int DeltaMs, int WindowMs, Vector2 Position)
 {
-    public static readonly HitAttemptResult None = new(Judgment.None, 0, Vector2.Zero);
+    public static readonly HitAttemptResult None = new(Judgment.None, 0, 0, Vector2.Zero);
 }
+
+public readonly record struct NoteJudgmentEvent(
+    Judgment Judgment,
+    int DeltaMs,
+    int WindowMs,
+    int SongTimeMs);
 
 public readonly record struct AutoMissFeedback(Vector2 Position);

@@ -13,6 +13,8 @@ public sealed class Beatmap
     public float CursorHitboxRadius { get; set; } = 4f;
     public int NumberCycle { get; set; } = 4;
     public bool ShowNumbers { get; set; } = true;
+    public HitWindows? HitWindows { get; set; }
+    public DifficultyProfile? DifficultyProfile { get; set; }
     public float BulletOutlineThickness { get; set; } = 2f;
     public float CenterWarningRadius { get; set; } = 120f;
     public int CenterWarningLeadMs { get; set; } = 350;

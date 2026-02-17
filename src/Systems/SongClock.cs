@@ -3,7 +3,7 @@ using Microsoft.Xna.Framework.Media;
 
 namespace RhythmbulletPrototype.Systems;
 
-public sealed class SongClock : IDisposable
+public sealed class SongClock : IGameClock, IDisposable
 {
     private readonly Stopwatch _wallClock = Stopwatch.StartNew();
     private long _anchorWallMs;
@@ -17,6 +17,7 @@ public sealed class SongClock : IDisposable
 
     public bool HasAudioSong => _activeSong is not null;
     public bool IsRunning => _isRunning;
+    public float Rate => _timeScale;
     public int SongDurationMs => _activeSong is null ? 0 : (int)Math.Max(0, _activeSong.Duration.TotalMilliseconds);
 
     public int CurrentTimeMs

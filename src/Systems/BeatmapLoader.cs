@@ -62,6 +62,8 @@ public sealed class BeatmapLoader
         beatmap.BackgroundGridAlpha = Math.Clamp(beatmap.BackgroundGridAlpha, 0f, 1f);
         beatmap.BackgroundImageAlpha = Math.Clamp(beatmap.BackgroundImageAlpha, 0f, 1f);
         beatmap.BackgroundOverlayAlpha = Math.Clamp(beatmap.BackgroundOverlayAlpha, 0f, 1f);
+        beatmap.HitWindows = HitWindows.Normalize(beatmap.HitWindows);
+        beatmap.DifficultyProfile = DifficultyProfile.Normalize(beatmap.DifficultyProfile);
 
         if (beatmap.Notes is null)
         {

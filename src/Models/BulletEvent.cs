@@ -21,6 +21,7 @@ public sealed class BulletEvent
     public float? AngleStepDeg { get; set; }
     public float? DirectionDeg { get; set; }
     public float? MovementIntensity { get; set; }
+    public float? RingExpandDistance { get; set; }
     public string? MotionPattern { get; set; }
     public int? TelegraphMs { get; set; }
     public int? LaserDurationMs { get; set; }

@@ -32,4 +32,16 @@ public sealed class InputState
     public bool RightPressed => _currMouse.RightButton == ButtonState.Pressed && _prevMouse.RightButton == ButtonState.Released;
 
     public bool MiddlePressed => _currMouse.MiddleButton == ButtonState.Pressed && _prevMouse.MiddleButton == ButtonState.Released;
+
+    public InputSnapshot CreateSnapshot()
+    {
+        return new InputSnapshot(
+            _currMouse.Position,
+            _currMouse.ScrollWheelValue - _prevMouse.ScrollWheelValue,
+            LeftPressed,
+            LeftDown,
+            LeftReleased,
+            RightPressed,
+            MiddlePressed);
+    }
 }

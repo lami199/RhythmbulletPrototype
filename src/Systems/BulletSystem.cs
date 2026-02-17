@@ -29,8 +29,11 @@ public sealed class BulletSystem
     public int CenterWarningLeadMs { get; set; } = 350;
     public float CenterWarningAlpha { get; set; } = 0.35f;
     public int SpawnCountdownLeadMs { get; set; } = 3000;
+    public float RingDensityScale { get; set; } = 1f;
     public int PotentiallyImpossibleEvents { get; private set; }
     public int ActiveBulletCount => _active.Count + _lasers.Count;
+    public int ActiveHazardsNearCursor { get; private set; }
+    public float MinCursorClearancePx { get; private set; } = float.PositiveInfinity;
     public readonly record struct BulletPreviewDrawData(Vector2 Position, float Radius, float Scale, Color Fill, Color Outline, float OutlineThickness);
 
     public static readonly string[] MovingPatterns =
@@ -125,6 +128,8 @@ public sealed class BulletSystem
         _warnings.Clear();
         _countdowns.Clear();
         _nextEventIndex = 0;
+        ActiveHazardsNearCursor = 0;
+        MinCursorClearancePx = float.PositiveInfinity;
     }
 
     public void SpawnImmediate(BulletEvent evt, int songTimeMs, Vector2 cursorPos)
@@ -203,6 +208,8 @@ public sealed class BulletSystem
                     ComputeFountainArcPosition(t, b),
                 MotionKind.MouseTrack =>
                     ComputeMouseTrackPosition(b, cursorPos, dt),
+                MotionKind.MouseAimDirection =>
+                    ComputeMouseAimAfterExpandPosition(b, dt),
                 _ => null
             };
 
@@ -242,6 +249,8 @@ public sealed class BulletSystem
                 RecycleAt(i);
             }
         }
+
+        UpdateDangerBudget(cursorPos);
     }
 
     public bool CheckCursorHit(Vector2 cursorPos, float cursorRadius)
@@ -320,6 +329,43 @@ public sealed class BulletSystem
 
             _lasers[i] = l;
         }
+    }
+
+    private void UpdateDangerBudget(Vector2 cursorPos)
+    {
+        const float nearHazardPx = 140f;
+        var nearCount = 0;
+        var minClearance = float.PositiveInfinity;
+
+        for (var i = 0; i < _active.Count; i++)
+        {
+            var b = _active[i];
+            var d = Vector2.Distance(cursorPos, b.Position) - (b.Radius * b.Scale);
+            minClearance = MathF.Min(minClearance, d);
+            if (d <= nearHazardPx)
+            {
+                nearCount++;
+            }
+        }
+
+        for (var i = 0; i < _lasers.Count; i++)
+        {
+            var l = _lasers[i];
+            if (!l.IsActivePhase)
+            {
+                continue;
+            }
+
+            var d = MathF.Sqrt(DistanceSquaredPointToSegment(cursorPos, l.Start, l.End)) - (l.Width * 0.5f);
+            minClearance = MathF.Min(minClearance, d);
+            if (d <= nearHazardPx)
+            {
+                nearCount++;
+            }
+        }
+
+        ActiveHazardsNearCursor = nearCount;
+        MinCursorClearancePx = float.IsFinite(minClearance) ? minClearance : 9999f;
     }
 
     private static Vector2 ComputeLaserMotionOffset(LaserBeam l, float t)
@@ -461,7 +507,7 @@ public sealed class BulletSystem
 
         if (p == "radial")
         {
-            SpawnRadial(origin, Math.Max(10, count), speed, style, MotionKind.None, 0f, 1f);
+            SpawnRadial(origin, ScaleRingCount(Math.Max(10, count)), speed, style, MotionKind.None, 0f, 1f, 0f, evt.RingExpandDistance);
             return;
         }
 
@@ -486,7 +532,7 @@ public sealed class BulletSystem
         if (p.Contains("wall")) SpawnWall(origin, dir, Math.Max(10, count), 900f, speed, style, MotionKind.None, 0f, 1f);
         else if (p.Contains("fan") || p.Contains("arc")) SpawnFan(origin, dir, MathHelper.ToRadians(evt.SpreadDeg ?? 60f), Math.Max(6, count), speed, style, MotionKind.None, 0f, 1f);
         else if (p.Contains("spiral") || p.Contains("helix") || p.Contains("vortex")) SpawnSpiral(origin, Math.Max(16, count), speed, style, MotionKind.Spiral, 22f, 1.35f);
-        else SpawnRadial(origin, Math.Max(10, count), speed, style, MotionKind.None, 0f, 1f);
+        else SpawnRadial(origin, ScaleRingCount(Math.Max(10, count)), speed, style, MotionKind.None, 0f, 1f, 0f, evt.RingExpandDistance);
     }
 
     private void SpawnByPatternGeometry(string pattern, Vector2 origin, float direction, int count, float speed, Style style, BulletEvent evt, MotionProfile profile)
@@ -518,12 +564,12 @@ public sealed class BulletSystem
             return;
         }
 
-        SpawnRadial(origin, Math.Max(3, count), speed, style, profile.Kind, profile.Amp, profile.Freq);
+        SpawnRadial(origin, ScaleRingCount(Math.Max(3, count)), speed, style, profile.Kind, profile.Amp, profile.Freq, 0f, evt.RingExpandDistance);
     }
 
-    private void SpawnRadial(Vector2 origin, int count, float speed, Style style, MotionKind motion, float amp, float freq, float life = 0f)
+    private void SpawnRadial(Vector2 origin, int count, float speed, Style style, MotionKind motion, float amp, float freq, float life = 0f, float? ringExpandDistance = null)
     {
-        for (var i = 0; i < count; i++) SpawnSingle(origin, MathHelper.TwoPi * i / Math.Max(1, count), speed, style, motion, amp, freq, life, origin);
+        for (var i = 0; i < count; i++) SpawnSingle(origin, MathHelper.TwoPi * i / Math.Max(1, count), speed, style, motion, amp, freq, life, origin, ringExpandDistance);
     }
 
     private void SpawnFan(Vector2 origin, float centerAngle, float spread, int count, float speed, Style style, MotionKind motion, float amp, float freq, float life = 0f)
@@ -569,25 +615,25 @@ public sealed class BulletSystem
 
         if (pattern == "ring_8")
         {
-            SpawnRadial(origin, 8, speed, style, motion, amp, freq);
+            SpawnRadial(origin, ScaleRingCount(8), speed, style, motion, amp, freq, 0f, evt.RingExpandDistance);
             return;
         }
 
         if (pattern == "ring_16")
         {
-            SpawnRadial(origin, 16, speed, style, motion, amp, freq);
+            SpawnRadial(origin, ScaleRingCount(16), speed, style, motion, amp, freq, 0f, evt.RingExpandDistance);
             return;
         }
 
         if (pattern == "ring_12")
         {
-            SpawnRadial(origin, 12, speed, style, motion, amp, freq);
+            SpawnRadial(origin, ScaleRingCount(12), speed, style, motion, amp, freq, 0f, evt.RingExpandDistance);
             return;
         }
 
         if (pattern == "ring_32")
         {
-            SpawnRadial(origin, 32, speed, style, motion, amp, freq);
+            SpawnRadial(origin, ScaleRingCount(32), speed, style, motion, amp, freq, 0f, evt.RingExpandDistance);
             return;
         }
 
@@ -599,7 +645,7 @@ public sealed class BulletSystem
         }
 
         // Fallback for supported static patterns.
-        SpawnRadial(origin, Math.Max(10, c), speed, style, motion, amp, freq);
+        SpawnRadial(origin, ScaleRingCount(Math.Max(10, c)), speed, style, motion, amp, freq, 0f, evt.RingExpandDistance);
     }
 
     private void SpawnLaser(Vector2 origin, float dir, BulletEvent evt, Style style, MotionProfile profile)
@@ -640,16 +686,17 @@ public sealed class BulletSystem
         });
     }
 
-    private void SpawnSingle(Vector2 origin, float angle, float speed, Style style, MotionKind motion, float amp, float freq, float life = 0f, Vector2? orbitCenter = null)
+    private void SpawnSingle(Vector2 origin, float angle, float speed, Style style, MotionKind motion, float amp, float freq, float life = 0f, Vector2? orbitCenter = null, float? ringExpandDistance = null)
     {
         var b = _pool.Count > 0 ? _pool.Pop() : new Bullet();
         var d = new Vector2(MathF.Cos(angle), MathF.Sin(angle));
+        var aimDirection = d;
         if (motion == MotionKind.MouseAimDirection)
         {
             var toCursor = _spawnCursorPos - origin;
             if (toCursor.LengthSquared() > 0.0001f)
             {
-                d = Vector2.Normalize(toCursor);
+                aimDirection = Vector2.Normalize(toCursor);
             }
         }
         var center = orbitCenter ?? origin;
@@ -663,6 +710,7 @@ public sealed class BulletSystem
         b.FromCenter = origin - center;
         b.OutwardDirection = SafeNormalize(b.FromCenter);
         if (b.OutwardDirection.LengthSquared() < 0.0001f) b.OutwardDirection = d;
+        b.AimDirection = aimDirection;
         b.HomeDirection = SafeNormalize(new Vector2(640f, 360f) - origin);
         if (b.HomeDirection.LengthSquared() < 0.0001f) b.HomeDirection = d;
         b.SectorSign = ((int)MathF.Floor(((angle + MathHelper.Pi) / MathHelper.TwoPi) * 8f) % 2 == 0) ? 1f : -1f;
@@ -675,6 +723,7 @@ public sealed class BulletSystem
         b.OutlineThickness = style.OutlineThickness;
         b.Shape = style.Shape;
         b.Motion = motion;
+        b.RingExpandDistance = ringExpandDistance ?? 0f;
         b.Amp = amp;
         b.Freq = freq;
         // Keep left/right oscillation deterministic so bullets always begin from placed spawn.
@@ -685,7 +734,8 @@ public sealed class BulletSystem
         b.Life = life;
         b.TrackMouseLocked = false;
         b.TrackMouseTime = 0f;
-        b.Rotation = angle;
+        // Fountain bullets should visually face downward regardless of launch direction.
+        b.Rotation = motion == MotionKind.FountainArc ? MathHelper.PiOver2 : angle;
         var normalizedShape = NormalizeShape(style.Shape);
         b.RotationSpeed = (motion == MotionKind.Rotate || motion == MotionKind.StaticRotate) && normalizedShape != "kunai" ? 2f : 0f;
         b.Scale = 1f;
@@ -1054,12 +1104,32 @@ public sealed class BulletSystem
             TimeMs = src.TimeMs, Pattern = src.Pattern, Count = src.Count, Speed = src.Speed, IntervalMs = src.IntervalMs,
             BulletType = src.BulletType, BulletSize = src.BulletSize, Radius = src.Radius, Color = src.Color, OutlineColor = src.OutlineColor,
             GlowColor = src.GlowColor, GlowIntensity = src.GlowIntensity, OutlineThickness = src.OutlineThickness, SpreadDeg = src.SpreadDeg,
-            AngleStepDeg = src.AngleStepDeg, DirectionDeg = src.DirectionDeg, MovementIntensity = src.MovementIntensity, MotionPattern = src.MotionPattern,
+            AngleStepDeg = src.AngleStepDeg, DirectionDeg = src.DirectionDeg, MovementIntensity = src.MovementIntensity, RingExpandDistance = src.RingExpandDistance, MotionPattern = src.MotionPattern,
             TelegraphMs = src.TelegraphMs, LaserDurationMs = src.LaserDurationMs, LaserWidth = src.LaserWidth, LaserLength = src.LaserLength, X = src.X, Y = src.Y
         };
+        ApplyReadabilityPolicy(evt);
         if (!_autoBalanceWaves || !IsWavePattern(evt.Pattern)) return evt;
         while (evt.Count > 3 && !HasEnoughLaneGap(evt)) evt.Count--;
         return evt;
+    }
+
+    private static void ApplyReadabilityPolicy(BulletEvent evt)
+    {
+        var p = evt.Pattern.Trim().ToLowerInvariant();
+        var motion = (evt.MotionPattern ?? string.Empty).Trim().ToLowerInvariant();
+
+        if (p.Contains("laser"))
+        {
+            var minTelegraph = 450;
+            if (motion.Contains("mouse")) minTelegraph = 700;
+            if (evt.Count >= 20) minTelegraph = Math.Max(minTelegraph, 800);
+            evt.TelegraphMs = Math.Max(minTelegraph, evt.TelegraphMs ?? 0);
+        }
+
+        if ((p.Contains("ring") || p == "radial") && evt.Count > 64)
+        {
+            evt.Count = 64;
+        }
     }
 
     private bool HasEnoughLaneGap(BulletEvent evt)
@@ -1356,9 +1426,13 @@ public sealed class BulletSystem
 
     private static Vector2 ComputeFountainArcPosition(float t, Bullet b)
     {
-        const float expandPhaseSec = 0.22f;
+        const float defaultExpandPhaseSec = 0.22f;
         var outward = b.Direction.LengthSquared() < 0.0001f ? new Vector2(0f, 1f) : SafeNormalize(b.Direction);
         var expandSpeed = MathF.Max(120f + b.Amp * 1.2f, b.BaseSpeed * 0.45f);
+        var defaultExpandDistance = expandSpeed * defaultExpandPhaseSec;
+        var configuredExpandDistance = Math.Max(0f, b.RingExpandDistance);
+        var expandDistance = configuredExpandDistance > 0.01f ? configuredExpandDistance : defaultExpandDistance;
+        var expandPhaseSec = Math.Max(0.01f, expandDistance / Math.Max(1f, expandSpeed));
 
         if (t <= expandPhaseSec)
         {
@@ -1367,7 +1441,7 @@ public sealed class BulletSystem
         }
 
         var u = t - expandPhaseSec;
-        var spreadBase = b.Spawn + outward * (expandSpeed * expandPhaseSec);
+        var spreadBase = b.Spawn + outward * expandDistance;
         var keepSpread = outward * (b.BaseSpeed * 0.55f * u);
         var launchUp = -(240f + b.Amp * 1.8f);
         var gravity = 520f + b.Amp * 2.4f;
@@ -1435,6 +1509,23 @@ public sealed class BulletSystem
         return b.Position;
     }
 
+    private static Vector2 ComputeMouseAimAfterExpandPosition(Bullet b, float dt)
+    {
+        // Keep ring spread first, then lock in a straight shot toward cursor.
+        const float expandPhaseSec = 0.30f;
+
+        if (!b.TrackMouseLocked && b.Age >= expandPhaseSec)
+        {
+            var aim = b.AimDirection.LengthSquared() > 0.0001f ? b.AimDirection : b.Direction;
+            b.Direction = SafeNormalize(aim);
+            b.TrackMouseLocked = true;
+        }
+
+        b.Velocity = b.Direction * b.BaseSpeed;
+        b.Position += b.Velocity * dt;
+        return b.Position;
+    }
+
     private static Vector2 RotateTowards(Vector2 current, Vector2 target, float maxRadians)
     {
         if (current.LengthSquared() < 0.0001f) return target;
@@ -1479,6 +1570,12 @@ public sealed class BulletSystem
 
     private static Vector2 ToVirtualPosition(BulletEvent evt) => new((evt.X ?? 0.5f) * 1280f, (evt.Y ?? 0.5f) * 720f);
 
+    private int ScaleRingCount(int baseCount)
+    {
+        var scale = Math.Clamp(RingDensityScale, 0.25f, 3f);
+        return Math.Max(1, (int)MathF.Round(baseCount * scale));
+    }
+
     private bool ShouldWarn(Vector2 origin)
     {
         var center = new Vector2(640f, 360f);
@@ -1516,6 +1613,7 @@ public sealed class BulletSystem
         public Vector2 Accel;
         public Vector2 Direction;
         public Vector2 OutwardDirection;
+        public Vector2 AimDirection;
         public Vector2 HomeDirection;
         public float BaseSpeed;
         public Vector2 OrbitCenter;
@@ -1530,6 +1628,7 @@ public sealed class BulletSystem
         public float OutlineThickness;
         public string? Shape;
         public MotionKind Motion;
+        public float RingExpandDistance;
         public float Amp;
         public float Freq;
         public float Phase;

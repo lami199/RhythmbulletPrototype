@@ -65,6 +65,9 @@ public sealed class Game1 : Game
     private CursorController _cursor = new(new Vector2(VirtualWidth * 0.5f, VirtualHeight * 0.5f));
     private NoteSystem _noteSystem = new();
     private BulletSystem _bulletSystem = new();
+    private readonly ScoreProcessor _scoreProcessor = new();
+    private readonly HealthProcessor _healthProcessor = new();
+    private readonly SessionStatsWriter _sessionStatsWriter = new();
     private VfxSystem _vfx = new();
     private readonly NoteSystem _editorPreviewNotes = new();
     private readonly BulletSystem _editorPreviewBullets = new();
@@ -81,6 +84,12 @@ public sealed class Game1 : Game
         ("AR 8", 750),
         ("AR 10", 450)
     };
+    private readonly (string Label, float DensityScale)[] _bulletDensityOptions =
+    {
+        ("Low", 0.65f),
+        ("Normal", 1.00f),
+        ("High", 1.35f)
+    };
     private int _mainMenuIndex;
     private int _levelSelectIndex;
     private int _songSelectIndex;
@@ -90,6 +99,8 @@ public sealed class Game1 : Game
     private readonly List<string> _songSelectOptions = new();
     private string? _playAudioOverridePath;
     private int _difficultyIndex = 1;
+    private int _bulletDensityIndex = 1;
+    private int _settingsRowIndex;
     private string _activeMapPath = string.Empty;
     private string _editorLevelPath = string.Empty;
     private string _currentEditorProjectPath = string.Empty;
@@ -103,16 +114,15 @@ public sealed class Game1 : Game
 
     private bool _showDebugHud = true;
     private bool _showHitboxes;
+    private bool _enableMouseSmoothing;
+    private Vector2 _smoothedMouseTarget = new(VirtualWidth * 0.5f, VirtualHeight * 0.5f);
     private bool _paused;
     private bool _failed;
     private int _timingOffsetMs;
-    private int _lastLifeAwardScore;
     private int _nextDamageAllowedMs;
-    private float _lives;
-    private float _maxLives = 100f;
-    private float _bulletHitDamage = 22f;
-    private int _lifeGainStepScore = 350;
-    private float _lifeGainAmount = 4f;
+    private readonly List<GameMod> _activeMods = new();
+    private HitWindows _effectiveHitWindows = HitWindows.Default;
+    private DifficultyProfile _effectiveDifficulty = DifficultyProfile.Default;
     private string _statusMessage = "";
     private Color _bgTop = new Color(18, 26, 40);
     private Color _bgBottom = new Color(10, 14, 22);
@@ -149,6 +159,10 @@ public sealed class Game1 : Game
     private int _vulnerableReturnAnimStartMs = int.MinValue;
     private const int VulnerableReturnAnimDurationMs = 260;
     private const int BulletInvulnerabilityMs = 2000;
+    private int _lastDamageTakenMs = int.MinValue;
+    private const int HitShakeSettleMs = 220;
+    private const float HitShakeMaxPx = 10f;
+    private const float HitShakeSettleMaxPx = 2.2f;
 
     public Game1(string? routeArg = null)
     {
@@ -197,6 +211,7 @@ public sealed class Game1 : Game
         }
 
         _input.Update();
+        var inputFrame = _input.CreateSnapshot();
         IsMouseVisible = _appMode != AppMode.Gameplay || _showEscMenu;
 
         if (_showEscMenu)
@@ -241,6 +256,11 @@ public sealed class Game1 : Game
 
         if (_input.IsKeyPressed(Keys.F1)) _showDebugHud = !_showDebugHud;
         if (_input.IsKeyPressed(Keys.F2)) _showHitboxes = !_showHitboxes;
+        if (_input.IsKeyPressed(Keys.F3))
+        {
+            _enableMouseSmoothing = !_enableMouseSmoothing;
+            _statusMessage = _enableMouseSmoothing ? "MOUSE SMOOTHING ON" : "MOUSE SMOOTHING OFF";
+        }
         if (_input.IsKeyPressed(Keys.F5)) ReloadBeatmapAndRestart();
         if (_input.IsKeyPressed(Keys.F6)) CycleTargetFps();
         if (_appMode == AppMode.Gameplay && _input.IsKeyPressed(Keys.Space))
@@ -266,7 +286,17 @@ public sealed class Game1 : Game
 
         var dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
         _saveToastTimer = MathF.Max(0f, _saveToastTimer - dt);
-        var mouseVirtual = _viewport.ScreenToVirtual(_input.MousePosition);
+        var mouseVirtual = _viewport.ScreenToVirtual(inputFrame.MousePosition);
+        if (_enableMouseSmoothing)
+        {
+            var blend = 1f - MathF.Pow(1f - 0.22f, Math.Max(1f, dt * 60f));
+            _smoothedMouseTarget = Vector2.Lerp(_smoothedMouseTarget, mouseVirtual, blend);
+            mouseVirtual = _smoothedMouseTarget;
+        }
+        else
+        {
+            _smoothedMouseTarget = mouseVirtual;
+        }
         var slowMouse = _input.IsKeyDown(Keys.C);
         _cursor.Update(dt, mouseVirtual, slowMouse);
         var mouseNormalized = new Vector2(
@@ -296,19 +326,19 @@ public sealed class Game1 : Game
             return;
         }
 
-        var hitPressed = _input.LeftPressed || _input.IsKeyPressed(Keys.Z) || _input.IsKeyPressed(Keys.X);
+        var hitPressed = inputFrame.LeftPressed || _input.IsKeyPressed(Keys.Z) || _input.IsKeyPressed(Keys.X);
 
         if (hitPressed)
         {
             _vfx.SpawnLeftClick(_cursor.Position);
         }
 
-        if (_input.RightPressed)
+        if (inputFrame.RightPressed)
         {
             _vfx.SpawnRightClick(_cursor.Position);
         }
 
-        if (_input.MiddlePressed)
+        if (inputFrame.MiddlePressed)
         {
             _vfx.SpawnMiddleClick(_cursor.Position);
         }
@@ -326,8 +356,9 @@ public sealed class Game1 : Game
 
         if (!_failed)
         {
-            _noteSystem.Update(dt, songMs, _cursor.Position, _input.LeftDown, _input.LeftReleased);
+            _noteSystem.Update(dt, songMs, _cursor.Position, inputFrame.LeftDown, inputFrame.LeftReleased);
             _bulletSystem.Update(dt, songMs, _cursor.Position);
+            _healthProcessor.Update(dt);
 
             while (_noteSystem.TryDequeueAutoMiss(out var miss))
             {
@@ -342,22 +373,27 @@ public sealed class Game1 : Game
                 }
             }
 
+            while (_noteSystem.TryDequeueJudgment(out var judgmentEvent))
+            {
+                _scoreProcessor.Apply(judgmentEvent);
+                _healthProcessor.ApplyJudgment(judgmentEvent);
+            }
+
             if (_bulletSystem.CheckCursorHit(_cursor.Position, _cursor.CollisionRadius))
             {
                 if (songMs >= _nextDamageAllowedMs)
                 {
-                    _lives = Math.Max(0f, _lives - _bulletHitDamage);
+                    _healthProcessor.ApplyBulletHit();
                     _nextDamageAllowedMs = songMs + BulletInvulnerabilityMs;
+                    _lastDamageTakenMs = songMs;
                     _vfx.SpawnFailPulse(_cursor.Position);
-                    if (_lives <= 0f)
-                    {
-                        _failed = true;
-                        _statusMessage = "FAILED - PRESS R TO RESTART";
-                    }
                 }
             }
 
-            AwardLivesFromScore();
+            if (_healthProcessor.IsFailed)
+            {
+                MarkGameplayFailed();
+            }
         }
 
         if (_appMode == AppMode.Gameplay)
@@ -607,9 +643,19 @@ public sealed class Game1 : Game
         _vfx.Clear();
         _cursor.Reset(new Vector2(VirtualWidth * 0.5f, VirtualHeight * 0.5f));
 
+        ResolveActiveMods();
         ApplyDifficultyApproachOverride();
+        ApplyBulletDensitySetting();
+        _effectiveDifficulty = ModRules.ResolveDifficultyProfile(_beatmap.DifficultyProfile, _activeMods);
+        _effectiveHitWindows = ModRules.ResolveHitWindows(_beatmap.HitWindows, _effectiveDifficulty, _activeMods);
+        _beatmap.DifficultyProfile = _effectiveDifficulty;
+        _beatmap.HitWindows = _effectiveHitWindows;
+        _songClock.SetPlaybackRate(ModRules.ResolveClockRate(_activeMods));
         _noteSystem.Reset(_beatmap);
         _bulletSystem.Reset(_beatmap);
+        _scoreProcessor.Reset(_activeMods);
+        _healthProcessor.Configure(_beatmap, _effectiveDifficulty, _activeMods);
+        _healthProcessor.Reset();
         _cursor.CollisionRadius = _beatmap.CursorHitboxRadius;
         _bgTop = ParseHexColor(_beatmap.BackgroundTopColor, new Color(18, 26, 40));
         _bgBottom = ParseHexColor(_beatmap.BackgroundBottomColor, new Color(10, 14, 22));
@@ -620,13 +666,8 @@ public sealed class Game1 : Game
         _backgroundImageMode = string.IsNullOrWhiteSpace(_beatmap.BackgroundImageMode) ? "cover" : _beatmap.BackgroundImageMode.Trim().ToLowerInvariant();
         ReloadBackgroundTextures();
         ApplyTargetFps(_beatmap.TargetFps);
-        _maxLives = _beatmap.MaxLives;
-        _bulletHitDamage = _beatmap.BulletHitDamage;
-        _lifeGainStepScore = _beatmap.LifeGainStepScore;
-        _lifeGainAmount = _beatmap.LifeGainAmount;
-        _lives = _maxLives;
-        _lastLifeAwardScore = 0;
         _nextDamageAllowedMs = 0;
+        _lastDamageTakenMs = int.MinValue;
         _wasInvulnerable = false;
         _vulnerableReturnAnimStartMs = int.MinValue;
 
@@ -638,6 +679,18 @@ public sealed class Game1 : Game
         }
 
         _songClock.PlayFromStart();
+    }
+
+    private void MarkGameplayFailed()
+    {
+        if (_failed)
+        {
+            return;
+        }
+
+        _failed = true;
+        _statusMessage = "FAILED - PRESS R TO RESTART";
+        WriteSessionStats("failed");
     }
 
     private void DrawBackground(SpriteBatch spriteBatch, RenderHelpers render, int songMs)
@@ -680,6 +733,8 @@ public sealed class Game1 : Game
         var invulnerable = _appMode == AppMode.Gameplay && !_failed && songMs < _nextDamageAllowedMs;
         var invulPulse = 0.72f + 0.28f * MathF.Sin(songMs * 0.045f);
         var alphaScale = invulnerable ? (0.38f + invulPulse * 0.24f) : 1f;
+        var shakeOffset = ComputeCursorShakeOffset(songMs, invulnerable);
+        var cursorDrawPos = _cursor.Position + shakeOffset;
 
         var trail = _cursor.Trail;
         for (var i = 0; i < trail.Count; i++)
@@ -687,15 +742,15 @@ public sealed class Game1 : Game
             var t = i / (float)Math.Max(1, trail.Count - 1);
             var lifeT = Math.Clamp(1f - (trail[i].Age / 0.32f), 0f, 1f);
             var alpha = (0.12f + t * 0.42f) * lifeT * alphaScale;
-            render.DrawCircleFilled(spriteBatch, trail[i].Position, 7f + t * 7f, new Color(120, 200, 255) * alpha);
+            render.DrawCircleFilled(spriteBatch, trail[i].Position + shakeOffset, 7f + t * 7f, new Color(120, 200, 255) * alpha);
         }
 
         var bodyRadius = Math.Max(13f, _cursor.CollisionRadius * 4.5f);
-        render.DrawCircleFilled(spriteBatch, _cursor.Position, bodyRadius, new Color(125, 225, 255, 95) * alphaScale);
-        render.DrawCircleOutline(spriteBatch, _cursor.Position, bodyRadius, 1.5f, new Color(205, 245, 255, 170) * alphaScale);
+        render.DrawCircleFilled(spriteBatch, cursorDrawPos, bodyRadius, new Color(125, 225, 255, 95) * alphaScale);
+        render.DrawCircleOutline(spriteBatch, cursorDrawPos, bodyRadius, 1.5f, new Color(205, 245, 255, 170) * alphaScale);
 
-        render.DrawCircleFilled(spriteBatch, _cursor.Position, _cursor.CollisionRadius, new Color(15, 18, 24) * alphaScale);
-        render.DrawCircleOutline(spriteBatch, _cursor.Position, _cursor.CollisionRadius + 1.3f, 2.3f, Color.White * alphaScale);
+        render.DrawCircleFilled(spriteBatch, cursorDrawPos, _cursor.CollisionRadius, new Color(15, 18, 24) * alphaScale);
+        render.DrawCircleOutline(spriteBatch, cursorDrawPos, _cursor.CollisionRadius + 1.3f, 2.3f, Color.White * alphaScale);
 
         if (!invulnerable)
         {
@@ -706,15 +761,40 @@ public sealed class Game1 : Game
                 var ease = 1f - MathF.Pow(1f - t, 2f);
                 var ringR = _cursor.CollisionRadius + 3.5f + ease * 16f;
                 var ringA = (1f - t) * (1f - t);
-                render.DrawCircleOutline(spriteBatch, _cursor.Position, ringR, 2f, new Color(240, 245, 255) * (0.7f * ringA));
-                render.DrawCircleFilled(spriteBatch, _cursor.Position, _cursor.CollisionRadius + 0.5f, Color.White * (0.12f * ringA));
+                render.DrawCircleOutline(spriteBatch, cursorDrawPos, ringR, 2f, new Color(240, 245, 255) * (0.7f * ringA));
+                render.DrawCircleFilled(spriteBatch, cursorDrawPos, _cursor.CollisionRadius + 0.5f, Color.White * (0.12f * ringA));
             }
         }
 
         if (_showHitboxes)
         {
-            render.DrawCircleOutline(spriteBatch, _cursor.Position, _cursor.CollisionRadius + 2.5f, 1f, Color.LawnGreen);
+            render.DrawCircleOutline(spriteBatch, cursorDrawPos, _cursor.CollisionRadius + 2.5f, 1f, Color.LawnGreen);
         }
+    }
+
+    private Vector2 ComputeCursorShakeOffset(int songMs, bool invulnerable)
+    {
+        float amp;
+        if (invulnerable && _lastDamageTakenMs != int.MinValue)
+        {
+            var t = Math.Clamp((songMs - _lastDamageTakenMs) / (float)BulletInvulnerabilityMs, 0f, 1f);
+            amp = HitShakeMaxPx * (1f - t) * (1f - t);
+        }
+        else
+        {
+            var settleElapsed = songMs - _vulnerableReturnAnimStartMs;
+            if (settleElapsed < 0 || settleElapsed > HitShakeSettleMs)
+            {
+                return Vector2.Zero;
+            }
+
+            var t = settleElapsed / (float)HitShakeSettleMs;
+            amp = HitShakeSettleMaxPx * (1f - t) * (1f - t);
+        }
+
+        var ox = MathF.Sin(songMs * 0.31f) + 0.55f * MathF.Sin(songMs * 0.79f + 1.3f);
+        var oy = MathF.Cos(songMs * 0.27f + 0.4f) + 0.45f * MathF.Sin(songMs * 0.67f + 2.2f);
+        return new Vector2(ox, oy) * (amp * 0.58f);
     }
 
     private void DrawDebugHud(SpriteBatch spriteBatch, BitmapTextRenderer text, GameTime gameTime, int songMs)
@@ -731,11 +811,18 @@ public sealed class Game1 : Game
         text.DrawString(spriteBatch, $"OFFSET_MS: {_timingOffsetMs}", new Vector2(16f, 106f), Color.White, 2f);
         text.DrawString(spriteBatch, $"HITBOX_R: {_cursor.CollisionRadius:0.0}", new Vector2(16f, 124f), Color.White, 2f);
         text.DrawString(spriteBatch, $"LAST_DT: {_noteSystem.LastHitDeltaMs:0}", new Vector2(16f, 142f), Color.White, 2f);
-        text.DrawString(spriteBatch, $"SCORE: {_noteSystem.Score}", new Vector2(16f, 160f), Color.White, 2f);
-        text.DrawString(spriteBatch, $"COMBO: {_noteSystem.Combo}", new Vector2(16f, 178f), Color.White, 2f);
-        text.DrawString(spriteBatch, $"ACC: {_noteSystem.Accuracy:0.00}%", new Vector2(16f, 196f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"SCORE: {_scoreProcessor.TotalScore}", new Vector2(16f, 160f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"COMBO: {_scoreProcessor.Combo}", new Vector2(16f, 178f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"ACC: {_scoreProcessor.Accuracy:0.00}%", new Vector2(16f, 196f), Color.White, 2f);
         text.DrawString(spriteBatch, $"WAVE_RISK: {_bulletSystem.PotentiallyImpossibleEvents}", new Vector2(16f, 214f), _bulletSystem.PotentiallyImpossibleEvents > 0 ? new Color(255, 170, 170) : new Color(170, 245, 170), 2f);
-        text.DrawString(spriteBatch, "F1 HUD F2 HITBOX F5 RELOAD F6 FPS SPACE PAUSE R RESTART +/- OFFSET", new Vector2(16f, 700f), new Color(200, 210, 230), 1.5f);
+        text.DrawString(spriteBatch, $"DANGER_NEAR: {_bulletSystem.ActiveHazardsNearCursor}", new Vector2(16f, 268f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"MIN_CLEAR: {_bulletSystem.MinCursorClearancePx:0.0}px", new Vector2(16f, 286f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"TIMING E/O/L: {_noteSystem.EarlyHitCount}/{_noteSystem.OnTimeHitCount}/{_noteSystem.LateHitCount}", new Vector2(16f, 304f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"MOUSE_SMOOTH: {(_enableMouseSmoothing ? "ON" : "OFF")}", new Vector2(16f, 322f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"HP: {_healthProcessor.CurrentHealth:0.0}/{_healthProcessor.MaxHealth:0.0}", new Vector2(16f, 340f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"HW P/G/O/M: {_effectiveHitWindows.PerfectMs}/{_effectiveHitWindows.GoodMs}/{_effectiveHitWindows.OkMs}/{_effectiveHitWindows.MissMs}", new Vector2(16f, 358f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"RATE: {_songClock.Rate:0.00}x MODS: {FormatActiveMods()}", new Vector2(16f, 376f), Color.White, 2f);
+        text.DrawString(spriteBatch, "F1 HUD F2 HITBOX F3 MOUSE_SMOOTH F5 RELOAD F6 FPS SPACE PAUSE R RESTART +/- OFFSET", new Vector2(16f, 700f), new Color(200, 210, 230), 1.5f);
 
         if (!string.IsNullOrWhiteSpace(_statusMessage))
         {
@@ -754,7 +841,8 @@ public sealed class Game1 : Game
         var barY = 232;
         var barWidth = 280;
         var barHeight = 16;
-        var fill = (int)MathF.Round(barWidth * Math.Clamp(_lives / Math.Max(1f, _maxLives), 0f, 1f));
+        var ratio = _healthProcessor.MaxHealth <= 0.001f ? 0f : _healthProcessor.CurrentHealth / _healthProcessor.MaxHealth;
+        var fill = (int)MathF.Round(barWidth * Math.Clamp(ratio, 0f, 1f));
 
         _render.DrawRect(spriteBatch, new Rectangle(barX - 2, barY - 2, barWidth + 4, barHeight + 4), Color.White * 0.85f);
         _render.DrawRect(spriteBatch, new Rectangle(barX, barY, barWidth, barHeight), new Color(35, 35, 40));
@@ -763,7 +851,7 @@ public sealed class Game1 : Game
 
     private void DrawLivesOverlay(SpriteBatch spriteBatch, BitmapTextRenderer text)
     {
-        text.DrawString(spriteBatch, $"LIVES: {_lives:0}/{_maxLives:0}", new Vector2(960f, 16f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"HP: {_healthProcessor.CurrentHealth:0.0}/{_healthProcessor.MaxHealth:0.0}", new Vector2(960f, 16f), Color.White, 2f);
         DrawLivesBarAt(spriteBatch, 960, 36, 300, 16);
     }
 
@@ -774,21 +862,11 @@ public sealed class Game1 : Game
             return;
         }
 
-        var fill = (int)MathF.Round(barWidth * Math.Clamp(_lives / Math.Max(1f, _maxLives), 0f, 1f));
+        var ratio = _healthProcessor.MaxHealth <= 0.001f ? 0f : _healthProcessor.CurrentHealth / _healthProcessor.MaxHealth;
+        var fill = (int)MathF.Round(barWidth * Math.Clamp(ratio, 0f, 1f));
         _render.DrawRect(spriteBatch, new Rectangle(barX - 2, barY - 2, barWidth + 4, barHeight + 4), Color.White * 0.85f);
         _render.DrawRect(spriteBatch, new Rectangle(barX, barY, barWidth, barHeight), new Color(35, 35, 40));
         _render.DrawRect(spriteBatch, new Rectangle(barX, barY, fill, barHeight), new Color(90, 235, 120));
-    }
-
-    private void AwardLivesFromScore()
-    {
-        var totalScore = _noteSystem.Score;
-
-        while (totalScore - _lastLifeAwardScore >= _lifeGainStepScore)
-        {
-            _lastLifeAwardScore += _lifeGainStepScore;
-            _lives = Math.Min(_maxLives, _lives + _lifeGainAmount);
-        }
     }
 
     private void UpdatePerformanceMetrics(float dt)
@@ -1504,6 +1582,7 @@ public sealed class Game1 : Game
             _editorPreviewBullets.ClearRuntime();
             var previewMap = BuildPreviewBeatmapFromEditor(_editorController.CurrentLevel, out var previewSimStartMs, timelineStartMs, timelineEndMs, songMs);
             _editorPreviewNotes.Reset(previewMap);
+            ApplyBulletDensitySetting();
             _editorPreviewBullets.Reset(previewMap);
             SimulateEditorPreviewToTime(songMs, previewSimStartMs);
             _editorPreviewRevision = _editorController.Revision;
@@ -1688,6 +1767,8 @@ public sealed class Game1 : Game
             if (bullet.Parameters.TryGetValue("angleStepDeg", out var step)) evt.AngleStepDeg = (float)step;
             if (bullet.Parameters.TryGetValue("directionDeg", out var direction)) evt.DirectionDeg = (float)direction;
             if (bullet.Parameters.TryGetValue("movementIntensity", out var movement)) evt.MovementIntensity = (float)movement;
+            if (bullet.Parameters.TryGetValue("ringExpandDistance", out var ringExpandDistance)) evt.RingExpandDistance = (float)Math.Max(0, ringExpandDistance);
+            if (!evt.RingExpandDistance.HasValue && bullet.Parameters.TryGetValue("expansionDistance", out var expansionDistance)) evt.RingExpandDistance = (float)Math.Max(0, expansionDistance);
             if (bullet.Parameters.TryGetValue("radius", out var radius)) evt.Radius = (float)radius;
             if (bullet.Parameters.TryGetValue("bulletSize", out var bsize)) evt.BulletSize = (float)bsize;
             if (bullet.Parameters.TryGetValue("outlineThickness", out var outT)) evt.OutlineThickness = (float)outT;
@@ -1867,6 +1948,7 @@ public sealed class Game1 : Game
                 break;
             case 2:
                 _appMode = AppMode.Settings;
+                _settingsRowIndex = 0;
                 _statusMessage = "SETTINGS";
                 break;
             case 3:
@@ -1885,18 +1967,43 @@ public sealed class Game1 : Game
     {
         if (_input.IsKeyPressed(Keys.Up))
         {
-            _difficultyIndex = (_difficultyIndex + _difficultyOptions.Length - 1) % _difficultyOptions.Length;
+            _settingsRowIndex = (_settingsRowIndex + 2 - 1) % 2;
         }
 
         if (_input.IsKeyPressed(Keys.Down))
         {
-            _difficultyIndex = (_difficultyIndex + 1) % _difficultyOptions.Length;
+            _settingsRowIndex = (_settingsRowIndex + 1) % 2;
+        }
+
+        if (_input.IsKeyPressed(Keys.Left))
+        {
+            if (_settingsRowIndex == 0)
+            {
+                _difficultyIndex = (_difficultyIndex + _difficultyOptions.Length - 1) % _difficultyOptions.Length;
+            }
+            else
+            {
+                _bulletDensityIndex = (_bulletDensityIndex + _bulletDensityOptions.Length - 1) % _bulletDensityOptions.Length;
+            }
+        }
+
+        if (_input.IsKeyPressed(Keys.Right))
+        {
+            if (_settingsRowIndex == 0)
+            {
+                _difficultyIndex = (_difficultyIndex + 1) % _difficultyOptions.Length;
+            }
+            else
+            {
+                _bulletDensityIndex = (_bulletDensityIndex + 1) % _bulletDensityOptions.Length;
+            }
         }
 
         if (_input.IsKeyPressed(Keys.Enter))
         {
-            var selected = _difficultyOptions[_difficultyIndex];
-            _statusMessage = $"DIFFICULTY {selected.Label} ({selected.ApproachMs}ms)";
+            var selectedDifficulty = _difficultyOptions[_difficultyIndex];
+            var selectedDensity = _bulletDensityOptions[_bulletDensityIndex];
+            _statusMessage = $"SETTINGS APPLIED - {selectedDifficulty.Label} / BULLET DENSITY {selectedDensity.Label}";
             _appMode = AppMode.MainMenu;
         }
 
@@ -2079,33 +2186,31 @@ public sealed class Game1 : Game
         }
 
         var diff = _difficultyOptions[_difficultyIndex];
+        var density = _bulletDensityOptions[_bulletDensityIndex];
         text.DrawString(spriteBatch, $"Difficulty: {diff.Label} ({diff.ApproachMs}ms)", new Vector2(430f, 600f), new Color(220, 235, 255), 1.8f);
-        text.DrawString(spriteBatch, "UP/DOWN: SELECT  ENTER: CONFIRM  ESC: EXIT", new Vector2(400f, 640f), new Color(205, 215, 230), 1.8f);
+        text.DrawString(spriteBatch, $"Bullet Density: {density.Label} ({density.DensityScale:0.00}x)", new Vector2(430f, 628f), new Color(220, 235, 255), 1.6f);
+        text.DrawString(spriteBatch, "UP/DOWN: SELECT  ENTER: CONFIRM  ESC: EXIT", new Vector2(400f, 658f), new Color(205, 215, 230), 1.6f);
     }
 
     private void DrawSettingsMenu(SpriteBatch spriteBatch, RenderHelpers render, BitmapTextRenderer text)
     {
         render.DrawRect(spriteBatch, new Rectangle(0, 0, VirtualWidth, VirtualHeight), new Color(0, 0, 0, 185));
-        text.DrawString(spriteBatch, "SETTINGS - DIFFICULTY", new Vector2(430f, 150f), Color.White, 2.6f);
-        text.DrawString(spriteBatch, "Affects note approach speed", new Vector2(470f, 190f), new Color(190, 210, 235), 1.8f);
+        text.DrawString(spriteBatch, "SETTINGS", new Vector2(540f, 150f), Color.White, 2.6f);
 
-        var y = 280f;
-        for (var i = 0; i < _difficultyOptions.Length; i++)
-        {
-            var selected = i == _difficultyIndex;
-            var c = selected ? new Color(120, 240, 255) : Color.White;
-            if (selected)
-            {
-                text.DrawString(spriteBatch, ">", new Vector2(470f, y), c, 2f);
-            }
+        var difficulty = _difficultyOptions[_difficultyIndex];
+        var density = _bulletDensityOptions[_bulletDensityIndex];
+        var difficultyColor = _settingsRowIndex == 0 ? new Color(120, 240, 255) : Color.White;
+        var densityColor = _settingsRowIndex == 1 ? new Color(120, 240, 255) : Color.White;
 
-            var (label, approachMs) = _difficultyOptions[i];
-            text.DrawString(spriteBatch, $"{label} ({approachMs} ms)", new Vector2(510f, y), c, 2.3f);
-            y += 46f;
-        }
+        text.DrawString(spriteBatch, _settingsRowIndex == 0 ? ">" : " ", new Vector2(350f, 280f), difficultyColor, 2f);
+        text.DrawString(spriteBatch, $"Difficulty: {difficulty.Label} ({difficulty.ApproachMs} ms)", new Vector2(390f, 280f), difficultyColor, 2.0f);
+        text.DrawString(spriteBatch, "Affects note approach speed", new Vector2(390f, 314f), new Color(190, 210, 235), 1.4f);
 
-        text.DrawString(spriteBatch, "AR 5 = 1.2s  |  AR 8 = 0.75s  |  AR 10 = 0.45s", new Vector2(350f, 460f), new Color(220, 230, 245), 1.7f);
-        text.DrawString(spriteBatch, "UP/DOWN: CHANGE  ENTER: APPLY  BACKSPACE: BACK", new Vector2(340f, 640f), new Color(205, 215, 230), 1.8f);
+        text.DrawString(spriteBatch, _settingsRowIndex == 1 ? ">" : " ", new Vector2(350f, 378f), densityColor, 2f);
+        text.DrawString(spriteBatch, $"Bullet Density: {density.Label} ({density.DensityScale:0.00}x)", new Vector2(390f, 378f), densityColor, 2.0f);
+        text.DrawString(spriteBatch, "Affects ring bullet count only (not laser or single shot)", new Vector2(390f, 412f), new Color(190, 210, 235), 1.4f);
+
+        text.DrawString(spriteBatch, "UP/DOWN: SELECT ROW  LEFT/RIGHT: CHANGE  ENTER: APPLY  BACKSPACE: BACK", new Vector2(195f, 640f), new Color(205, 215, 230), 1.6f);
     }
 
     private void DrawSongSelectMenu(SpriteBatch spriteBatch, RenderHelpers render, BitmapTextRenderer text)
@@ -2263,6 +2368,62 @@ public sealed class Game1 : Game
         _beatmap.ApproachMs = targetApproach;
     }
 
+    private void ResolveActiveMods()
+    {
+        _activeMods.Clear();
+    }
+
+    private string FormatActiveMods()
+    {
+        if (_activeMods.Count == 0)
+        {
+            return "NONE";
+        }
+
+        return string.Join(",", _activeMods.Select(m => m.ToString().ToUpperInvariant()));
+    }
+
+    private void ApplyBulletDensitySetting()
+    {
+        var density = _bulletDensityOptions[Math.Clamp(_bulletDensityIndex, 0, _bulletDensityOptions.Length - 1)].DensityScale;
+        _bulletSystem.RingDensityScale = density;
+        _editorPreviewBullets.RingDensityScale = density;
+    }
+
+    private void WriteSessionStats(string reason)
+    {
+        try
+        {
+            var stats = new GameplaySessionStats
+            {
+                MapPath = _activeMapPath,
+                TimestampUtc = DateTime.UtcNow,
+                ClockRate = _songClock.Rate,
+                ActiveMods = new List<GameMod>(_activeMods),
+                HitWindows = _effectiveHitWindows,
+                TotalScore = _scoreProcessor.TotalScore,
+                MaxCombo = _scoreProcessor.MaxCombo,
+                Accuracy = _scoreProcessor.Accuracy,
+                HealthRemaining = _healthProcessor.CurrentHealth,
+                PerfectCount = _scoreProcessor.PerfectCount,
+                GoodCount = _scoreProcessor.GoodCount,
+                OkCount = _scoreProcessor.OkCount,
+                MissCount = _scoreProcessor.MissCount,
+                EarlyHitCount = _noteSystem.EarlyHitCount,
+                OnTimeHitCount = _noteSystem.OnTimeHitCount,
+                LateHitCount = _noteSystem.LateHitCount
+            };
+
+            var statsDir = Path.Combine(AppContext.BaseDirectory, "Content", "Stats");
+            var fileName = $"{DateTime.UtcNow:yyyyMMdd_HHmmss}_{reason}.json";
+            var outputPath = Path.Combine(statsDir, fileName);
+            _sessionStatsWriter.Write(outputPath, stats);
+        }
+        catch
+        {
+        }
+    }
+
     private static Beatmap CreateFallbackBeatmap()
     {
         return new Beatmap
@@ -2276,6 +2437,8 @@ public sealed class Game1 : Game
             CursorHitboxRadius = 4f,
             NumberCycle = 4,
             ShowNumbers = true,
+            HitWindows = HitWindows.Default,
+            DifficultyProfile = DifficultyProfile.Default,
             BulletOutlineThickness = 2f,
             CenterWarningRadius = 120f,
             CenterWarningLeadMs = 350,
