@@ -1,7 +1,8 @@
-﻿{
-  "activeCourse": "course_1",
+{
+  "activeCourse": "shooting_star",
   "courses": {
     "course_1": "Content/Maps/map.json",
+    "shooting_star": "Content/Maps/Projects/shooting_star.editor.published.map.json",
     "course_2": "Content/Maps/map_course2.json",
     "boss": "Content/Maps/map_boss.json"
   }

@@ -49,6 +49,8 @@ public sealed class Game1 : Game
     private const int VirtualWidth = 1280;
     private const int VirtualHeight = 720;
     private const int EditorPreviewMaxBackSimMs = 30000;
+    private const string BundledShootingStarEditorFile = "shooting_star.editor.json";
+    private const string BundledShootingStarPublishedFile = "shooting_star.editor.published.map.json";
 
     private readonly GraphicsDeviceManager _graphics;
     private readonly InputState _input = new();
@@ -1494,6 +1496,68 @@ public sealed class Game1 : Game
         return Path.Combine(AppContext.BaseDirectory, "Content", "Maps", "Projects");
     }
 
+    private IEnumerable<string> GetProjectsDirectoriesForRead()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var primary = Path.GetFullPath(GetProjectsDirectory());
+        if (seen.Add(primary))
+        {
+            yield return primary;
+        }
+
+        var sourceFallback = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "Content", "Maps", "Projects"));
+        if (seen.Add(sourceFallback))
+        {
+            yield return sourceFallback;
+        }
+    }
+
+    private List<string> GetProjectFiles(string pattern)
+    {
+        var results = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var dir in GetProjectsDirectoriesForRead())
+        {
+            if (!Directory.Exists(dir))
+            {
+                continue;
+            }
+
+            foreach (var file in Directory.GetFiles(dir, pattern))
+            {
+                var full = Path.GetFullPath(file);
+                if (seen.Add(full))
+                {
+                    results.Add(full);
+                }
+            }
+        }
+
+        return results;
+    }
+
+    private bool HasBundledShootingStarLevel()
+    {
+        foreach (var dir in GetProjectsDirectoriesForRead())
+        {
+            if (!Directory.Exists(dir))
+            {
+                continue;
+            }
+
+            var editorPath = Path.Combine(dir, BundledShootingStarEditorFile);
+            var publishedPath = Path.Combine(dir, BundledShootingStarPublishedFile);
+            if (File.Exists(editorPath) || File.Exists(publishedPath))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private string GetDeletedProjectsDirectory()
     {
         return Path.Combine(GetProjectsDirectory(), "Deleted");
@@ -2020,7 +2084,9 @@ public sealed class Game1 : Game
         _levelSelectOptions.AddRange(DiscoverPlayableLevels());
         _levelSelectIndex = 0;
         _playMapOverridePath = null;
-        _statusMessage = "SELECT LEVEL";
+        _statusMessage = HasBundledShootingStarLevel()
+            ? "SELECT LEVEL"
+            : "SELECT LEVEL (shooting_star sample missing)";
     }
 
     private List<string> DiscoverPlayableLevels()
@@ -2028,15 +2094,14 @@ public sealed class Game1 : Game
         var results = new List<string>();
         try
         {
-            var dir = GetProjectsDirectory();
-            if (!Directory.Exists(dir))
+            var files = GetProjectFiles("*.editor.json")
+                .OrderBy(path => File.GetLastWriteTimeUtc(path))
+                .ToList();
+            if (files.Count == 0)
             {
                 return results;
             }
 
-            var files = Directory
-                .GetFiles(dir, "*.editor.json")
-                .OrderBy(path => File.GetLastWriteTimeUtc(path));
             results.AddRange(files);
         }
         catch
@@ -2324,14 +2389,7 @@ public sealed class Game1 : Game
 
     private string? GetMostRecentEditorProjectMapPath()
     {
-        var dir = GetProjectsDirectory();
-        if (!Directory.Exists(dir))
-        {
-            return null;
-        }
-
-        var editorFiles = Directory
-            .GetFiles(dir, "*.editor.json")
+        var editorFiles = GetProjectFiles("*.editor.json")
             .OrderBy(path => File.GetLastWriteTimeUtc(path))
             .ToList();
         if (editorFiles.Count == 0)
@@ -2344,14 +2402,7 @@ public sealed class Game1 : Game
 
     private string? GetMostRecentPublishedProjectMapPath()
     {
-        var dir = GetProjectsDirectory();
-        if (!Directory.Exists(dir))
-        {
-            return null;
-        }
-
-        var publishedFiles = Directory
-            .GetFiles(dir, "*.published.map.json")
+        var publishedFiles = GetProjectFiles("*.published.map.json")
             .OrderBy(path => File.GetLastWriteTimeUtc(path))
             .ToList();
         if (publishedFiles.Count == 0)

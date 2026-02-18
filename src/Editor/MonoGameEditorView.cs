@@ -25,6 +25,7 @@ public sealed class MonoGameEditorView : IEditorView
     private const int MaxActiveWorldMarkersDrawn = 220;
     private const int MaxActiveLabelDrawn = 36;
     private const int BulletPlacementMarkerLifetimeMs = 200;
+    private const int PreviewTimelineBins = 200;
 
     private readonly Queue<EditorCommand> _commands = new();
     private readonly Queue<string> _messages = new();
@@ -115,6 +116,13 @@ public sealed class MonoGameEditorView : IEditorView
     private string _hoverShapeOverride = string.Empty;
     private readonly BulletSystem _hoverPreviewSystem = new();
     private readonly List<BulletSystem.BulletPreviewDrawData> _hoverPreviewDrawData = new();
+    private readonly List<PreviewMark> _cachedVisiblePreviewMarks = new(2048);
+    private readonly byte[] _cachedPreviewBulletBins = new byte[PreviewTimelineBins];
+    private readonly byte[] _cachedPreviewNoteBins = new byte[PreviewTimelineBins];
+    private IReadOnlyList<PreviewMark>? _cachedPreviewMarksSource;
+    private int _cachedPreviewStartMs = int.MinValue;
+    private int _cachedPreviewWindowMs = -1;
+    private bool _cachedPreviewHeavyMode;
     private string _hoverPreviewSignature = string.Empty;
     private int _hoverPreviewSongMs;
     private bool _hoverPreviewHadAny;
@@ -141,6 +149,7 @@ public sealed class MonoGameEditorView : IEditorView
     {
         "none",
         "fountain",
+        "fountain_bounce",
         "left_drift",
         "right_drift",
         "left_to_right",
@@ -1924,23 +1933,13 @@ public sealed class MonoGameEditorView : IEditorView
 
         var now = _model.CurrentTimeMs;
         var startMs = _timelineViewStartMs;
+        EnsurePreviewMarksWindowCache(startMs);
         var timelineY = GetTimelineY();
-        var visibleMarks = new List<PreviewMark>(Math.Min(_model.PreviewMarks.Count, 2048));
-        foreach (var mark in _model.PreviewMarks)
-        {
-            var startX = TimelineX + ((mark.StartMs - startMs) / (float)_timelineWindowMs) * TimelineW;
-            var endX = TimelineX + ((mark.EndMs - startMs) / (float)_timelineWindowMs) * TimelineW;
-            if (endX < TimelineX || startX > TimelineX + TimelineW)
-            {
-                continue;
-            }
-            visibleMarks.Add(mark);
-        }
-
-        var heavyMode = visibleMarks.Count >= HeavyPreviewMarkThreshold;
+        var visibleMarks = _cachedVisiblePreviewMarks;
+        var heavyMode = _cachedPreviewHeavyMode;
         if (heavyMode)
         {
-            DrawPreviewMarksBatchedTimeline(spriteBatch, render, visibleMarks, startMs, timelineY);
+            DrawPreviewMarksBatchedTimeline(spriteBatch, render, timelineY);
         }
         else
         {
@@ -2002,50 +2001,90 @@ public sealed class MonoGameEditorView : IEditorView
         }
     }
 
-    private void DrawPreviewMarksBatchedTimeline(SpriteBatch spriteBatch, RenderHelpers render, List<PreviewMark> visibleMarks, int startMs, float timelineY)
+    private void EnsurePreviewMarksWindowCache(int startMs)
     {
-        const int bins = 200;
-        var bulletBins = new byte[bins];
-        var noteBins = new byte[bins];
-
-        for (var i = 0; i < visibleMarks.Count; i++)
+        if (_model is null)
         {
-            var mark = visibleMarks[i];
-            var x0 = TimelineX + ((mark.StartMs - startMs) / (float)_timelineWindowMs) * TimelineW;
-            var x1 = TimelineX + ((mark.EndMs - startMs) / (float)_timelineWindowMs) * TimelineW;
-            var clamped0 = Math.Clamp(x0, TimelineX, TimelineX + TimelineW);
-            var clamped1 = Math.Clamp(x1, TimelineX, TimelineX + TimelineW);
-            var b0 = (int)MathF.Floor(((clamped0 - TimelineX) / TimelineW) * bins);
-            var b1 = (int)MathF.Ceiling(((clamped1 - TimelineX) / TimelineW) * bins);
-            b0 = Math.Clamp(b0, 0, bins - 1);
-            b1 = Math.Clamp(b1, 0, bins - 1);
+            return;
+        }
+
+        var source = _model.PreviewMarks;
+        if (ReferenceEquals(source, _cachedPreviewMarksSource) &&
+            _cachedPreviewStartMs == startMs &&
+            _cachedPreviewWindowMs == _timelineWindowMs)
+        {
+            return;
+        }
+
+        _cachedPreviewMarksSource = source;
+        _cachedPreviewStartMs = startMs;
+        _cachedPreviewWindowMs = _timelineWindowMs;
+        _cachedVisiblePreviewMarks.Clear();
+        Array.Clear(_cachedPreviewBulletBins, 0, _cachedPreviewBulletBins.Length);
+        Array.Clear(_cachedPreviewNoteBins, 0, _cachedPreviewNoteBins.Length);
+
+        var endMs = startMs + _timelineWindowMs;
+        for (var i = 0; i < source.Count; i++)
+        {
+            var mark = source[i];
+            if (mark.EndMs < startMs || mark.StartMs > endMs)
+            {
+                continue;
+            }
+
+            _cachedVisiblePreviewMarks.Add(mark);
+        }
+
+        _cachedPreviewHeavyMode = _cachedVisiblePreviewMarks.Count >= HeavyPreviewMarkThreshold;
+        if (!_cachedPreviewHeavyMode)
+        {
+            return;
+        }
+
+        for (var i = 0; i < _cachedVisiblePreviewMarks.Count; i++)
+        {
+            var mark = _cachedVisiblePreviewMarks[i];
+            var clampedStart = Math.Clamp(mark.StartMs, startMs, endMs);
+            var clampedEnd = Math.Clamp(mark.EndMs, startMs, endMs);
+            if (clampedEnd < clampedStart)
+            {
+                continue;
+            }
+
+            var b0 = (int)(((long)(clampedStart - startMs) * PreviewTimelineBins) / Math.Max(1, _timelineWindowMs));
+            var b1 = (int)(((long)(clampedEnd - startMs) * PreviewTimelineBins) / Math.Max(1, _timelineWindowMs));
+            b0 = Math.Clamp(b0, 0, PreviewTimelineBins - 1);
+            b1 = Math.Clamp(b1, 0, PreviewTimelineBins - 1);
 
             for (var b = b0; b <= b1; b++)
             {
                 if (mark.Kind == LevelEditorConstants.EventKindBullet)
                 {
-                    if (bulletBins[b] < byte.MaxValue) bulletBins[b]++;
+                    if (_cachedPreviewBulletBins[b] < byte.MaxValue) _cachedPreviewBulletBins[b]++;
                 }
                 else
                 {
-                    if (noteBins[b] < byte.MaxValue) noteBins[b]++;
+                    if (_cachedPreviewNoteBins[b] < byte.MaxValue) _cachedPreviewNoteBins[b]++;
                 }
             }
         }
+    }
 
-        var binW = TimelineW / bins;
-        for (var i = 0; i < bins; i++)
+    private void DrawPreviewMarksBatchedTimeline(SpriteBatch spriteBatch, RenderHelpers render, float timelineY)
+    {
+        var binW = TimelineW / PreviewTimelineBins;
+        for (var i = 0; i < PreviewTimelineBins; i++)
         {
             var x = (int)MathF.Round(TimelineX + i * binW);
             var w = Math.Max(1, (int)MathF.Ceiling(binW));
-            if (bulletBins[i] > 0)
+            if (_cachedPreviewBulletBins[i] > 0)
             {
-                var a = Math.Clamp(80 + bulletBins[i] * 2, 80, 190);
+                var a = Math.Clamp(80 + _cachedPreviewBulletBins[i] * 2, 80, 190);
                 render.DrawRect(spriteBatch, new Rectangle(x, (int)timelineY - 5, w, 3), new Color(255, 130, 130, a));
             }
-            if (noteBins[i] > 0)
+            if (_cachedPreviewNoteBins[i] > 0)
             {
-                var a = Math.Clamp(80 + noteBins[i] * 2, 80, 190);
+                var a = Math.Clamp(80 + _cachedPreviewNoteBins[i] * 2, 80, 190);
                 render.DrawRect(spriteBatch, new Rectangle(x, (int)timelineY - 10, w, 3), new Color(130, 210, 255, a));
             }
         }
@@ -2169,6 +2208,7 @@ public sealed class MonoGameEditorView : IEditorView
         {
             "none" => string.Empty,
             "fountain" => "fountain_arc",
+            "fountain_bounce" => "fountain_bounce",
             "left_drift" => "left_drift",
             "right_drift" => "right_drift",
             "left_to_right" => "sinusoidal_path_deviation",

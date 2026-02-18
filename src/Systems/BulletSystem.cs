@@ -67,6 +67,7 @@ public sealed class BulletSystem
         "staggered_time_offset_release",
         "elliptical_orbit_drift",
         "fountain_arc",
+        "fountain_bounce",
         "mouse_track",
         "shoot_at_mouse"
     };
@@ -206,6 +207,8 @@ public sealed class BulletSystem
                     ComputeEllipticalDriftPosition(t, b),
                 MotionKind.FountainArc =>
                     ComputeFountainArcPosition(t, b),
+                MotionKind.FountainBounce =>
+                    ComputeFountainBouncePosition(t, b),
                 MotionKind.MouseTrack =>
                     ComputeMouseTrackPosition(b, cursorPos, dt),
                 MotionKind.MouseAimDirection =>
@@ -650,7 +653,9 @@ public sealed class BulletSystem
 
     private void SpawnLaser(Vector2 origin, float dir, BulletEvent evt, Style style, MotionProfile profile)
     {
-        var laserMotion = profile.Kind == MotionKind.FountainArc ? MotionKind.None : profile.Kind;
+        var laserMotion = (profile.Kind == MotionKind.FountainArc || profile.Kind == MotionKind.FountainBounce)
+            ? MotionKind.None
+            : profile.Kind;
         var telegraphMs = Math.Clamp(evt.TelegraphMs ?? 900, 50, 5000);
         var activeMs = Math.Clamp(evt.LaserDurationMs ?? 550, 50, 4000);
         var width = Math.Clamp(evt.LaserWidth ?? 22f, 4f, 220f);
@@ -735,7 +740,7 @@ public sealed class BulletSystem
         b.TrackMouseLocked = false;
         b.TrackMouseTime = 0f;
         // Fountain bullets should visually face downward regardless of launch direction.
-        b.Rotation = motion == MotionKind.FountainArc ? MathHelper.PiOver2 : angle;
+        b.Rotation = (motion == MotionKind.FountainArc || motion == MotionKind.FountainBounce) ? MathHelper.PiOver2 : angle;
         var normalizedShape = NormalizeShape(style.Shape);
         b.RotationSpeed = (motion == MotionKind.Rotate || motion == MotionKind.StaticRotate) && normalizedShape != "kunai" ? 2f : 0f;
         b.Scale = 1f;
@@ -1213,6 +1218,7 @@ public sealed class BulletSystem
             "staggered_time_offset_release" => new MotionProfile(MotionKind.StaggeredTimeOffsetRelease, 14f * intensity, 1.0f),
             "elliptical_orbit_drift" => new MotionProfile(MotionKind.EllipticalOrbitDrift, 24f * intensity, 0.9f),
             "fountain_arc" => new MotionProfile(MotionKind.FountainArc, 28f * intensity, 1.0f),
+            "fountain_bounce" => new MotionProfile(MotionKind.FountainBounce, 28f * intensity, 1.0f),
             "mouse_track" => new MotionProfile(MotionKind.MouseTrack, 24f * intensity, 1.0f),
             "shoot_at_mouse" => new MotionProfile(MotionKind.MouseAimDirection, 0f, 1.0f),
             _ => new MotionProfile(MotionKind.UniformOutwardDrift, 10f * intensity, 1f)
@@ -1447,6 +1453,93 @@ public sealed class BulletSystem
         var gravity = 520f + b.Amp * 2.4f;
         var vertical = launchUp * u + 0.5f * gravity * u * u;
         return spreadBase + keepSpread + new Vector2(0f, vertical);
+    }
+
+    private static Vector2 ComputeFountainBouncePosition(float t, Bullet b)
+    {
+        const float defaultExpandPhaseSec = 0.22f;
+        var outward = b.Direction.LengthSquared() < 0.0001f ? new Vector2(0f, 1f) : SafeNormalize(b.Direction);
+        var expandSpeed = MathF.Max(120f + b.Amp * 1.2f, b.BaseSpeed * 0.45f);
+        var defaultExpandDistance = expandSpeed * defaultExpandPhaseSec;
+        var configuredExpandDistance = Math.Max(0f, b.RingExpandDistance);
+        var expandDistance = configuredExpandDistance > 0.01f ? configuredExpandDistance : defaultExpandDistance;
+        var expandPhaseSec = Math.Max(0.01f, expandDistance / Math.Max(1f, expandSpeed));
+
+        if (t <= expandPhaseSec)
+        {
+            // Keep the same initial ring opening behavior as fountain_arc.
+            return b.Spawn + outward * (expandSpeed * t);
+        }
+
+        var u = t - expandPhaseSec;
+        var spreadBase = b.Spawn + outward * expandDistance;
+        var keepSpread = outward * (b.BaseSpeed * 0.55f * u);
+        // Copy fountain-like upward/downward behavior, then amplify each bounce aggressively.
+        var gravity = 540f + b.Amp * 1.5f;
+        var vy = -(145f + b.Amp * 0.9f);
+        var floorY = 10f + b.Amp * 0.10f;
+        var floorStep = 2.5f + b.Amp * 0.02f;
+
+        var remaining = u;
+        var y = 0f;
+
+        for (var bounce = 0; bounce < 6 && remaining > 0.0001f; bounce++)
+        {
+            var impactTime = SolveGroundImpactTime(y, vy, gravity, floorY);
+            if (impactTime <= 0f || impactTime >= remaining)
+            {
+                y += vy * remaining + 0.5f * gravity * remaining * remaining;
+                remaining = 0f;
+                break;
+            }
+
+            y = floorY;
+            vy += gravity * impactTime;
+
+            // Each bounce gets much bigger, so time between impacts also increases.
+            var reboundScale = Math.Clamp(0.70f + bounce * 0.18f + u * 0.05f, 0.70f, 1.80f);
+            var reboundSpeed = MathF.Abs(vy) * reboundScale;
+            reboundSpeed = Math.Min(reboundSpeed, 920f + b.Amp * 2.4f);
+            vy = -reboundSpeed;
+            remaining -= impactTime;
+
+            // The more bounces have happened, the more the baseline falls.
+            floorY += floorStep + bounce * 0.9f;
+
+            if (MathF.Abs(vy) < 20f && bounce > 2)
+            {
+                y = floorY;
+                break;
+            }
+        }
+
+        return spreadBase + keepSpread + new Vector2(0f, y);
+    }
+
+    private static float SolveGroundImpactTime(float y, float vy, float gravity, float groundY = 0f)
+    {
+        var a = 0.5f * gravity;
+        var b = vy;
+        var c = y - groundY;
+
+        if (MathF.Abs(a) < 0.0001f)
+        {
+            if (MathF.Abs(b) < 0.0001f) return -1f;
+            var linear = -c / b;
+            return linear > 0.0001f ? linear : -1f;
+        }
+
+        var disc = b * b - 4f * a * c;
+        if (disc < 0f) return -1f;
+
+        var sqrtDisc = MathF.Sqrt(disc);
+        var t1 = (-b - sqrtDisc) / (2f * a);
+        var t2 = (-b + sqrtDisc) / (2f * a);
+        var eps = 0.0001f;
+        var t = float.MaxValue;
+        if (t1 > eps) t = t1;
+        if (t2 > eps && t2 < t) t = t2;
+        return t == float.MaxValue ? -1f : t;
     }
 
     private static Vector2 ComputeMouseTrackPosition(Bullet b, Vector2 cursorPos, float dt)
@@ -1717,6 +1810,7 @@ public sealed class BulletSystem
         StaggeredTimeOffsetRelease,
         EllipticalOrbitDrift,
         FountainArc,
+        FountainBounce,
         MouseTrack,
         MouseAimDirection,
         Sine,

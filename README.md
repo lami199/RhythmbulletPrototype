@@ -51,6 +51,15 @@ dotnet run
 - `F5`: reload map JSON and restart
 - `F7`: toggle in-game Editor Mode
 
+## Bundled Sample Levels
+
+- `shooting_star` is bundled for main play flow.
+- Source files live in `Content/Maps/Projects/`:
+  - `shooting_star.editor.json`
+  - `shooting_star.editor.published.map.json`
+- Route fallback can target the published file via `Content/Maps/course_routes.json`.
+- To ship custom editor levels through GitHub, keep their published JSON in `Content/Maps/Projects/` (not only under `bin/...` output).
+
 ## In-Game Level Editor (MVP)
 
 The project now includes a framework-agnostic editor core under `src/Editor` with a MonoGame adapter.
