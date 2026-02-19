@@ -11,6 +11,7 @@ public sealed class BulletSystem
     private readonly List<BulletEvent> _events = new();
     private readonly List<Bullet> _active = new();
     private readonly List<LaserBeam> _lasers = new();
+    private readonly List<PendingSingleStream> _pendingSingleStreams = new();
     private readonly Stack<Bullet> _pool = new();
     private readonly List<SpawnWarning> _warnings = new();
     private readonly List<SpawnCountdown> _countdowns = new();
@@ -32,6 +33,7 @@ public sealed class BulletSystem
     public float RingDensityScale { get; set; } = 1f;
     public int PotentiallyImpossibleEvents { get; private set; }
     public int ActiveBulletCount => _active.Count + _lasers.Count;
+    public bool IsComplete => _nextEventIndex >= _events.Count && _active.Count == 0 && _lasers.Count == 0 && _pendingSingleStreams.Count == 0;
     public int ActiveHazardsNearCursor { get; private set; }
     public float MinCursorClearancePx { get; private set; } = float.PositiveInfinity;
     public readonly record struct BulletPreviewDrawData(Vector2 Position, float Radius, float Scale, Color Fill, Color Outline, float OutlineThickness);
@@ -75,6 +77,15 @@ public sealed class BulletSystem
     public static readonly string[] StaticPatterns =
     {
         "static_single",
+        "static_5",
+        "static_10",
+        "static_scatter_5",
+        "static_scatter_10",
+        "static_scatter_20",
+        "static_15",
+        "static_20",
+        "static_25",
+        "static_50",
         "ring_8","ring_12","ring_16","ring_32","laser_static"
     };
 
@@ -126,6 +137,7 @@ public sealed class BulletSystem
     {
         while (_active.Count > 0) RecycleAt(_active.Count - 1);
         _lasers.Clear();
+        _pendingSingleStreams.Clear();
         _warnings.Clear();
         _countdowns.Clear();
         _nextEventIndex = 0;
@@ -146,6 +158,7 @@ public sealed class BulletSystem
             _nextEventIndex++;
         }
 
+        UpdatePendingSingleStreams(dt);
         UpdateLasers(dt, cursorPos);
 
         for (var i = _active.Count - 1; i >= 0; i--)
@@ -153,6 +166,18 @@ public sealed class BulletSystem
             var b = _active[i];
             b.Age += dt;
             var t = b.Age;
+
+            // Optional per-bullet hold phase before motion begins.
+            if (t < b.HoldDelaySec)
+            {
+                b.Position = b.Spawn;
+                b.Scale = 1f;
+                b.Rotation += b.RotationSpeed * dt;
+                _active[i] = b;
+                continue;
+            }
+
+            t -= b.HoldDelaySec;
             var basePos = b.Spawn + b.Velocity * t + 0.5f * b.Accel * t * t;
             var w = (t * b.Freq + b.Phase) * MathHelper.TwoPi;
             var perp = new Vector2(-b.Direction.Y, b.Direction.X);
@@ -258,10 +283,15 @@ public sealed class BulletSystem
 
     public bool CheckCursorHit(Vector2 cursorPos, float cursorRadius)
     {
+        return CheckCursorHit(cursorPos, cursorPos, cursorRadius);
+    }
+
+    public bool CheckCursorHit(Vector2 cursorPrevPos, Vector2 cursorPos, float cursorRadius)
+    {
         for (var i = 0; i < _active.Count; i++)
         {
             var r = _active[i].Radius * _active[i].Scale + cursorRadius;
-            if (Vector2.DistanceSquared(_active[i].Position, cursorPos) <= r * r) return true;
+            if (DistanceSquaredPointToSegment(_active[i].Position, cursorPrevPos, cursorPos) <= r * r) return true;
         }
 
         for (var i = 0; i < _lasers.Count; i++)
@@ -273,7 +303,7 @@ public sealed class BulletSystem
             }
 
             var r = cursorRadius + l.Width * 0.5f;
-            if (DistanceSquaredPointToSegment(cursorPos, l.Start, l.End) <= r * r)
+            if (DistanceSquaredSegmentToSegment(cursorPrevPos, cursorPos, l.Start, l.End) <= r * r)
             {
                 return true;
             }
@@ -425,6 +455,38 @@ public sealed class BulletSystem
         var t = Math.Clamp(Vector2.Dot(p - a, ab) / denom, 0f, 1f);
         var c = a + ab * t;
         return Vector2.DistanceSquared(p, c);
+    }
+
+    private static float DistanceSquaredSegmentToSegment(Vector2 a0, Vector2 a1, Vector2 b0, Vector2 b1)
+    {
+        if (SegmentsIntersect(a0, a1, b0, b1))
+        {
+            return 0f;
+        }
+
+        var d0 = DistanceSquaredPointToSegment(a0, b0, b1);
+        var d1 = DistanceSquaredPointToSegment(a1, b0, b1);
+        var d2 = DistanceSquaredPointToSegment(b0, a0, a1);
+        var d3 = DistanceSquaredPointToSegment(b1, a0, a1);
+        return MathF.Min(MathF.Min(d0, d1), MathF.Min(d2, d3));
+    }
+
+    private static bool SegmentsIntersect(Vector2 a0, Vector2 a1, Vector2 b0, Vector2 b1)
+    {
+        var o1 = Orientation(a0, a1, b0);
+        var o2 = Orientation(a0, a1, b1);
+        var o3 = Orientation(b0, b1, a0);
+        var o4 = Orientation(b0, b1, a1);
+        return o1 != o2 && o3 != o4;
+    }
+
+    private static int Orientation(Vector2 a, Vector2 b, Vector2 c)
+    {
+        var cross = (b.X - a.X) * (c.Y - a.Y) - (b.Y - a.Y) * (c.X - a.X);
+        const float eps = 0.0001f;
+        if (cross > eps) return 1;
+        if (cross < -eps) return -1;
+        return 0;
     }
 
     private void DrawLasers(SpriteBatch spriteBatch, RenderHelpers render, bool showHitboxes)
@@ -603,6 +665,35 @@ public sealed class BulletSystem
         _phaseSeed += MathHelper.ToRadians(17f);
     }
 
+    private void QueueSingleStream(Vector2 origin, float angle, int count, float intervalSec, float speed, Style style, MotionKind motion, float amp, float freq, float life = 0f, Vector2? orbitCenter = null, float? ringExpandDistance = null)
+    {
+        var center = orbitCenter ?? origin;
+        SpawnSingle(origin, angle, speed, style, motion, amp, freq, life, center, ringExpandDistance);
+
+        var remaining = count - 1;
+        if (remaining <= 0)
+        {
+            return;
+        }
+
+        _pendingSingleStreams.Add(new PendingSingleStream
+        {
+            Origin = origin,
+            Angle = angle,
+            Remaining = remaining,
+            IntervalSec = Math.Max(0.01f, intervalSec),
+            TimeUntilNextSec = Math.Max(0.01f, intervalSec),
+            Speed = speed,
+            Style = style,
+            Motion = motion,
+            Amp = amp,
+            Freq = freq,
+            Life = life,
+            OrbitCenter = center,
+            RingExpandDistance = ringExpandDistance
+        });
+    }
+
     private void SpawnStaticPattern(string pattern, Vector2 origin, float dir, int count, float speed, BulletEvent evt, Style style, MotionProfile profile)
     {
         var c = Math.Max(6, count);
@@ -644,6 +735,69 @@ public sealed class BulletSystem
         {
             // Static core pattern: always emitted straight down, movement profile modulates trajectory.
             SpawnSingle(origin, MathHelper.PiOver2, speed, style, motion, amp, freq, 0f, origin);
+            return;
+        }
+
+        if (pattern == "static_5")
+        {
+            var intervalSec = Math.Max(0.01f, evt.IntervalMs / 1000f);
+            QueueSingleStream(origin, MathHelper.PiOver2, 5, intervalSec, speed, style, motion, amp, freq, 0f, origin);
+            return;
+        }
+
+        if (pattern == "static_10")
+        {
+            var intervalSec = Math.Max(0.01f, evt.IntervalMs / 1000f);
+            QueueSingleStream(origin, MathHelper.PiOver2, 10, intervalSec, speed, style, motion, amp, freq, 0f, origin);
+            return;
+        }
+
+        if (pattern == "static_scatter_5")
+        {
+            var intervalSec = Math.Max(0.01f, evt.IntervalMs > 0 ? evt.IntervalMs / 1000f : 0.03f);
+            QueueScatterStaticStream(origin, 5, intervalSec, speed, style, motion, amp, freq);
+            return;
+        }
+
+        if (pattern == "static_scatter_10")
+        {
+            var intervalSec = Math.Max(0.01f, evt.IntervalMs > 0 ? evt.IntervalMs / 1000f : 0.025f);
+            QueueScatterStaticStream(origin, 10, intervalSec, speed, style, motion, amp, freq);
+            return;
+        }
+
+        if (pattern == "static_scatter_20")
+        {
+            var intervalSec = Math.Max(0.01f, evt.IntervalMs > 0 ? evt.IntervalMs / 1000f : 0.02f);
+            QueueScatterStaticStream(origin, 20, intervalSec, speed, style, motion, amp, freq);
+            return;
+        }
+
+        if (pattern == "static_15")
+        {
+            var intervalSec = Math.Max(0.01f, evt.IntervalMs / 1000f);
+            QueueSingleStream(origin, MathHelper.PiOver2, 15, intervalSec, speed, style, motion, amp, freq, 0f, origin);
+            return;
+        }
+
+        if (pattern == "static_20")
+        {
+            var intervalSec = Math.Max(0.01f, evt.IntervalMs / 1000f);
+            QueueSingleStream(origin, MathHelper.PiOver2, 20, intervalSec, speed, style, motion, amp, freq, 0f, origin);
+            return;
+        }
+
+        if (pattern == "static_25")
+        {
+            var intervalSec = Math.Max(0.01f, evt.IntervalMs / 1000f);
+            QueueSingleStream(origin, MathHelper.PiOver2, 25, intervalSec, speed, style, motion, amp, freq, 0f, origin);
+            return;
+        }
+
+        if (pattern == "static_50")
+        {
+            var intervalSec = Math.Max(0.01f, evt.IntervalMs / 1000f);
+            QueueSingleStream(origin, MathHelper.PiOver2, 50, intervalSec, speed, style, motion, amp, freq, 0f, origin);
             return;
         }
 
@@ -737,6 +891,7 @@ public sealed class BulletSystem
             : (float)_rng.NextDouble() * MathHelper.TwoPi;
         b.Age = 0f;
         b.Life = life;
+        b.HoldDelaySec = Math.Max(0f, life);
         b.TrackMouseLocked = false;
         b.TrackMouseTime = 0f;
         // Fountain bullets should visually face downward regardless of launch direction.
@@ -745,6 +900,54 @@ public sealed class BulletSystem
         b.RotationSpeed = (motion == MotionKind.Rotate || motion == MotionKind.StaticRotate) && normalizedShape != "kunai" ? 2f : 0f;
         b.Scale = 1f;
         _active.Add(b);
+    }
+
+    private void QueueScatterStaticStream(Vector2 origin, int count, float intervalSec, float speed, Style style, MotionKind motion, float amp, float freq)
+    {
+        var n = Math.Max(1, count);
+        var step = Math.Max(0.01f, intervalSec);
+        var totalHold = (n - 1) * step;
+        var scatterRadius = 40f + amp * 0.9f;
+
+        for (var i = 0; i < n; i++)
+        {
+            var theta = (float)_rng.NextDouble() * MathHelper.TwoPi;
+            var dist = MathF.Sqrt((float)_rng.NextDouble()) * scatterRadius;
+            var spawnPos = origin + new Vector2(MathF.Cos(theta), MathF.Sin(theta)) * dist;
+            var holdDelay = totalHold - i * step;
+
+            if (i == 0)
+            {
+                SpawnSingle(
+                    spawnPos,
+                    MathHelper.PiOver2,
+                    speed,
+                    style,
+                    motion,
+                    amp,
+                    freq,
+                    holdDelay,
+                    spawnPos);
+                continue;
+            }
+
+            _pendingSingleStreams.Add(new PendingSingleStream
+            {
+                Origin = spawnPos,
+                Angle = MathHelper.PiOver2,
+                Remaining = 1,
+                IntervalSec = step,
+                TimeUntilNextSec = i * step,
+                Speed = speed,
+                Style = style,
+                Motion = motion,
+                Amp = amp,
+                Freq = freq,
+                Life = holdDelay,
+                OrbitCenter = spawnPos,
+                RingExpandDistance = null
+            });
+        }
     }
 
     private void DrawBullet(SpriteBatch sb, RenderHelpers r, Bullet b, GraphicsDevice graphicsDevice)
@@ -1434,7 +1637,7 @@ public sealed class BulletSystem
     {
         const float defaultExpandPhaseSec = 0.22f;
         var outward = b.Direction.LengthSquared() < 0.0001f ? new Vector2(0f, 1f) : SafeNormalize(b.Direction);
-        var expandSpeed = MathF.Max(120f + b.Amp * 1.2f, b.BaseSpeed * 0.45f);
+        var expandSpeed = MathF.Max(90f + b.Amp * 1.0f, b.BaseSpeed * 0.34f);
         var defaultExpandDistance = expandSpeed * defaultExpandPhaseSec;
         var configuredExpandDistance = Math.Max(0f, b.RingExpandDistance);
         var expandDistance = configuredExpandDistance > 0.01f ? configuredExpandDistance : defaultExpandDistance;
@@ -1448,7 +1651,7 @@ public sealed class BulletSystem
 
         var u = t - expandPhaseSec;
         var spreadBase = b.Spawn + outward * expandDistance;
-        var keepSpread = outward * (b.BaseSpeed * 0.55f * u);
+        var keepSpread = outward * (b.BaseSpeed * 0.32f * u);
         var launchUp = -(240f + b.Amp * 1.8f);
         var gravity = 520f + b.Amp * 2.4f;
         var vertical = launchUp * u + 0.5f * gravity * u * u;
@@ -1457,6 +1660,7 @@ public sealed class BulletSystem
 
     private static Vector2 ComputeFountainBouncePosition(float t, Bullet b)
     {
+        const float bounceVelocityScale = 2f; // 2x velocity -> ~4x apex height vs original gravity-only arc
         const float defaultExpandPhaseSec = 0.22f;
         var outward = b.Direction.LengthSquared() < 0.0001f ? new Vector2(0f, 1f) : SafeNormalize(b.Direction);
         var expandSpeed = MathF.Max(120f + b.Amp * 1.2f, b.BaseSpeed * 0.45f);
@@ -1473,17 +1677,32 @@ public sealed class BulletSystem
 
         var u = t - expandPhaseSec;
         var spreadBase = b.Spawn + outward * expandDistance;
-        var keepSpread = outward * (b.BaseSpeed * 0.55f * u);
         // Copy fountain-like upward/downward behavior, then amplify each bounce aggressively.
-        var gravity = 540f + b.Amp * 1.5f;
-        var vy = -(145f + b.Amp * 0.9f);
-        var floorY = 10f + b.Amp * 0.10f;
+        var gravity = 380f + b.Amp * 1.2f;
+        var vy = -(112.5f + b.Amp * 0.72f) * bounceVelocityScale;
+        // Reduce pre-bounce drop distance so impacts happen sooner (about 3x less fall).
+        var floorY = 14f + b.Amp * 0.0667f;
         var floorStep = 2.5f + b.Amp * 0.02f;
+        var firstImpactTime = SolveGroundImpactTime(0f, vy, gravity, floorY);
+        if (firstImpactTime <= 0f)
+        {
+            firstImpactTime = u;
+        }
+
+        // Keep extending while falling, but much less before the first bounce.
+        var preImpactU = MathF.Min(u, firstImpactTime);
+        var postImpactU = MathF.Max(0f, u - preImpactU);
+        var spreadDistance =
+            (b.BaseSpeed * 0.25f * preImpactU) +
+            (8f + b.Amp * 0.03f) * preImpactU * preImpactU +
+            (b.BaseSpeed * 0.52f * postImpactU) +
+            (12f + b.Amp * 0.06f) * postImpactU * postImpactU;
+        var keepSpread = outward * spreadDistance;
 
         var remaining = u;
         var y = 0f;
 
-        for (var bounce = 0; bounce < 6 && remaining > 0.0001f; bounce++)
+        for (var bounce = 0; bounce < 12 && remaining > 0.0001f; bounce++)
         {
             var impactTime = SolveGroundImpactTime(y, vy, gravity, floorY);
             if (impactTime <= 0f || impactTime >= remaining)
@@ -1497,16 +1716,16 @@ public sealed class BulletSystem
             vy += gravity * impactTime;
 
             // Each bounce gets much bigger, so time between impacts also increases.
-            var reboundScale = Math.Clamp(0.70f + bounce * 0.18f + u * 0.05f, 0.70f, 1.80f);
+            var reboundScale = Math.Clamp(0.62f + bounce * 0.13f + u * 0.05f, 0.62f, 1.42f);
             var reboundSpeed = MathF.Abs(vy) * reboundScale;
-            reboundSpeed = Math.Min(reboundSpeed, 920f + b.Amp * 2.4f);
+            reboundSpeed = Math.Min(reboundSpeed, (820f + b.Amp * 2.2f) * bounceVelocityScale);
             vy = -reboundSpeed;
             remaining -= impactTime;
 
             // The more bounces have happened, the more the baseline falls.
-            floorY += floorStep + bounce * 0.9f;
+            floorY += floorStep + bounce * 2.1f;
 
-            if (MathF.Abs(vy) < 20f && bounce > 2)
+            if (MathF.Abs(vy) < 12f && bounce > 4)
             {
                 y = floorY;
                 break;
@@ -1727,6 +1946,7 @@ public sealed class BulletSystem
         public float Phase;
         public float Age;
         public float Life;
+        public float HoldDelaySec;
         public bool TrackMouseLocked;
         public float TrackMouseTime;
         public float Rotation;
@@ -1778,6 +1998,58 @@ public sealed class BulletSystem
     {
         public Vector2 Position;
         public int SpawnTimeMs;
+    }
+
+    private void UpdatePendingSingleStreams(float dt)
+    {
+        for (var i = _pendingSingleStreams.Count - 1; i >= 0; i--)
+        {
+            var pending = _pendingSingleStreams[i];
+            pending.TimeUntilNextSec -= dt;
+
+            while (pending.Remaining > 0 && pending.TimeUntilNextSec <= 0f)
+            {
+                SpawnSingle(
+                    pending.Origin,
+                    pending.Angle,
+                    pending.Speed,
+                    pending.Style,
+                    pending.Motion,
+                    pending.Amp,
+                    pending.Freq,
+                    pending.Life,
+                    pending.OrbitCenter,
+                    pending.RingExpandDistance);
+                pending.Remaining--;
+                pending.TimeUntilNextSec += pending.IntervalSec;
+            }
+
+            if (pending.Remaining <= 0)
+            {
+                _pendingSingleStreams.RemoveAt(i);
+            }
+            else
+            {
+                _pendingSingleStreams[i] = pending;
+            }
+        }
+    }
+
+    private struct PendingSingleStream
+    {
+        public Vector2 Origin;
+        public float Angle;
+        public int Remaining;
+        public float IntervalSec;
+        public float TimeUntilNextSec;
+        public float Speed;
+        public Style Style;
+        public MotionKind Motion;
+        public float Amp;
+        public float Freq;
+        public float Life;
+        public Vector2 OrbitCenter;
+        public float? RingExpandDistance;
     }
 
     private enum MotionKind

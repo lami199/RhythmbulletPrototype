@@ -474,6 +474,27 @@ public sealed class LevelEditorController
 
         switch (pattern)
         {
+            case "static_single":
+                p["count"] = 1;
+                break;
+            case "static_5":
+                p["count"] = 5;
+                break;
+            case "static_10":
+                p["count"] = 10;
+                break;
+            case "static_15":
+                p["count"] = 15;
+                break;
+            case "static_20":
+                p["count"] = 20;
+                break;
+            case "static_25":
+                p["count"] = 25;
+                break;
+            case "static_50":
+                p["count"] = 50;
+                break;
             case "laser_static":
                 p["count"] = 1;
                 p["speed"] = 0;

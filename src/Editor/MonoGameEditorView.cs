@@ -1861,6 +1861,12 @@ public sealed class MonoGameEditorView : IEditorView
         var previewShape = string.IsNullOrWhiteSpace(_hoverShapeOverride) ? _selectedBulletShape : _hoverShapeOverride;
         var count = p switch
         {
+            "static_5" => 5,
+            "static_10" => 10,
+            "static_15" => 15,
+            "static_20" => 20,
+            "static_25" => 25,
+            "static_50" => 50,
             "ring_8" => 8,
             "ring_12" => 12,
             "ring_16" => 16,

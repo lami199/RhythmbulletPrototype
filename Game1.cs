@@ -120,6 +120,9 @@ public sealed class Game1 : Game
     private Vector2 _smoothedMouseTarget = new(VirtualWidth * 0.5f, VirtualHeight * 0.5f);
     private bool _paused;
     private bool _failed;
+    private bool _levelCompleted;
+    private string _clearRank = "F";
+    private string _clearReason = "";
     private int _timingOffsetMs;
     private int _nextDamageAllowedMs;
     private readonly List<GameMod> _activeMods = new();
@@ -265,7 +268,7 @@ public sealed class Game1 : Game
         }
         if (_input.IsKeyPressed(Keys.F5)) ReloadBeatmapAndRestart();
         if (_input.IsKeyPressed(Keys.F6)) CycleTargetFps();
-        if (_appMode == AppMode.Gameplay && _input.IsKeyPressed(Keys.Space))
+        if (_appMode == AppMode.Gameplay && !_levelCompleted && _input.IsKeyPressed(Keys.Space))
         {
             _paused = !_paused;
             if (_paused)
@@ -281,6 +284,18 @@ public sealed class Game1 : Game
         if (_input.IsKeyPressed(Keys.R))
         {
             RestartCurrentMap();
+        }
+
+        if (_appMode == AppMode.Gameplay && _levelCompleted && _input.IsKeyPressed(Keys.Enter))
+        {
+            _songClock.Stop();
+            _paused = false;
+            _failed = false;
+            _levelCompleted = false;
+            _appMode = AppMode.MainMenu;
+            _statusMessage = "MAIN MENU";
+            base.Update(gameTime);
+            return;
         }
 
         if (_input.IsKeyPressed(Keys.OemPlus) || _input.IsKeyPressed(Keys.Add)) _timingOffsetMs += 5;
@@ -299,6 +314,7 @@ public sealed class Game1 : Game
         {
             _smoothedMouseTarget = mouseVirtual;
         }
+        var cursorPrevPos = _cursor.Position;
         var slowMouse = _input.IsKeyDown(Keys.C);
         _cursor.Update(dt, mouseVirtual, slowMouse);
         var mouseNormalized = new Vector2(
@@ -356,7 +372,7 @@ public sealed class Game1 : Game
 
         var songMs = _songClock.CurrentTimeMs + _timingOffsetMs + _beatmap.GlobalOffsetMs;
 
-        if (!_failed)
+        if (!_failed && !_levelCompleted)
         {
             _noteSystem.Update(dt, songMs, _cursor.Position, inputFrame.LeftDown, inputFrame.LeftReleased);
             _bulletSystem.Update(dt, songMs, _cursor.Position);
@@ -381,7 +397,7 @@ public sealed class Game1 : Game
                 _healthProcessor.ApplyJudgment(judgmentEvent);
             }
 
-            if (_bulletSystem.CheckCursorHit(_cursor.Position, _cursor.CollisionRadius))
+            if (_bulletSystem.CheckCursorHit(cursorPrevPos, _cursor.Position, _cursor.CollisionRadius))
             {
                 if (songMs >= _nextDamageAllowedMs)
                 {
@@ -395,6 +411,10 @@ public sealed class Game1 : Game
             if (_healthProcessor.IsFailed)
             {
                 MarkGameplayFailed();
+            }
+            else if (_noteSystem.IsComplete && _bulletSystem.IsComplete)
+            {
+                MarkGameplayCompleted();
             }
         }
 
@@ -482,6 +502,10 @@ public sealed class Game1 : Game
             _render.DrawRect(_spriteBatch, new Rectangle(0, 0, VirtualWidth, VirtualHeight), new Color(35, 0, 0, 110));
             _text.DrawString(_spriteBatch, "FAILED", new Vector2(585f, 332f), new Color(255, 120, 120), 3f);
             _text.DrawString(_spriteBatch, "PRESS R TO RESTART", new Vector2(510f, 370f), Color.White, 2f);
+        }
+        else if (_levelCompleted)
+        {
+            DrawGameplayResults(_spriteBatch, _render, _text);
         }
 
         if (_showDebugHud && _appMode == AppMode.Gameplay)
@@ -641,6 +665,9 @@ public sealed class Game1 : Game
     private void RestartCurrentMap()
     {
         _failed = false;
+        _levelCompleted = false;
+        _clearRank = "F";
+        _clearReason = "";
         _paused = false;
         _vfx.Clear();
         _cursor.Reset(new Vector2(VirtualWidth * 0.5f, VirtualHeight * 0.5f));
@@ -693,6 +720,75 @@ public sealed class Game1 : Game
         _failed = true;
         _statusMessage = "FAILED - PRESS R TO RESTART";
         WriteSessionStats("failed");
+    }
+
+    private void MarkGameplayCompleted()
+    {
+        if (_levelCompleted || _failed)
+        {
+            return;
+        }
+
+        _levelCompleted = true;
+        _paused = false;
+        _songClock.Pause();
+        _clearRank = ComputeRank(_scoreProcessor.Accuracy, _scoreProcessor.MissCount);
+        _clearReason = ResolveRankHint(_clearRank);
+        _statusMessage = $"CLEAR - RANK {_clearRank}";
+        WriteSessionStats($"cleared_{_clearRank.ToLowerInvariant()}");
+    }
+
+    private static string ComputeRank(float accuracy, int missCount)
+    {
+        // Inspired by osu!-style clear grades, simplified to S/A/B/C/F.
+        if (accuracy >= 95f && missCount == 0) return "S";
+        if (accuracy >= 90f) return "A";
+        if (accuracy >= 80f) return "B";
+        if (accuracy >= 70f) return "C";
+        return "F";
+    }
+
+    private static string ResolveRankHint(string rank)
+    {
+        return rank switch
+        {
+            "S" => "Near-perfect run",
+            "A" => "Strong clear",
+            "B" => "Solid clear",
+            "C" => "Clear with room to improve",
+            _ => "Barely cleared"
+        };
+    }
+
+    private void DrawGameplayResults(SpriteBatch spriteBatch, RenderHelpers render, BitmapTextRenderer text)
+    {
+        render.DrawRect(spriteBatch, new Rectangle(0, 0, VirtualWidth, VirtualHeight), new Color(0, 0, 0, 150));
+
+        var panel = new Rectangle(370, 120, 540, 470);
+        render.DrawRect(spriteBatch, panel, new Color(20, 24, 34, 240));
+        render.DrawRect(spriteBatch, new Rectangle(panel.X, panel.Y, panel.Width, 1), new Color(170, 190, 225, 240));
+        render.DrawRect(spriteBatch, new Rectangle(panel.X, panel.Bottom - 1, panel.Width, 1), new Color(170, 190, 225, 240));
+
+        var rankColor = _clearRank switch
+        {
+            "S" => new Color(255, 220, 110),
+            "A" => new Color(140, 255, 170),
+            "B" => new Color(130, 210, 255),
+            "C" => new Color(255, 200, 130),
+            _ => new Color(255, 135, 135)
+        };
+
+        text.DrawString(spriteBatch, "RESULTS", new Vector2(panel.X + 190f, panel.Y + 24f), Color.White, 2.6f);
+        text.DrawString(spriteBatch, _clearRank, new Vector2(panel.X + 246f, panel.Y + 82f), rankColor, 5.8f);
+        text.DrawString(spriteBatch, _clearReason, new Vector2(panel.X + 152f, panel.Y + 162f), new Color(210, 220, 240), 1.7f);
+
+        text.DrawString(spriteBatch, $"SCORE: {_scoreProcessor.TotalScore}", new Vector2(panel.X + 70f, panel.Y + 220f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"ACC: {_scoreProcessor.Accuracy:0.00}%", new Vector2(panel.X + 70f, panel.Y + 252f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"MAX COMBO: {_scoreProcessor.MaxCombo}", new Vector2(panel.X + 70f, panel.Y + 284f), Color.White, 2f);
+        text.DrawString(spriteBatch, $"PERFECT/GOOD/OK/MISS: {_scoreProcessor.PerfectCount}/{_scoreProcessor.GoodCount}/{_scoreProcessor.OkCount}/{_scoreProcessor.MissCount}", new Vector2(panel.X + 70f, panel.Y + 316f), Color.White, 1.8f);
+        text.DrawString(spriteBatch, $"TIMING E/O/L: {_noteSystem.EarlyHitCount}/{_noteSystem.OnTimeHitCount}/{_noteSystem.LateHitCount}", new Vector2(panel.X + 70f, panel.Y + 346f), Color.White, 1.8f);
+
+        text.DrawString(spriteBatch, "ENTER: MAIN MENU   R: RESTART", new Vector2(panel.X + 108f, panel.Y + 410f), new Color(205, 220, 245), 1.7f);
     }
 
     private void DrawBackground(SpriteBatch spriteBatch, RenderHelpers render, int songMs)

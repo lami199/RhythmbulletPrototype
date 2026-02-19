@@ -52,6 +52,8 @@ public sealed class NoteSystem
         }
     }
 
+    public bool IsComplete => _tapNotes.All(n => n.Resolved) && _dragNotes.All(n => n.Resolved);
+
     public float Accuracy
     {
         get
