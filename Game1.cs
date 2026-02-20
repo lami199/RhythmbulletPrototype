@@ -1726,9 +1726,6 @@ public sealed class Game1 : Game
         var songMs = _songClock.CurrentTimeMs;
         var songDeltaMs = Math.Max(0, songMs - _editorPreviewLastMs);
         var songDt = songDeltaMs / 1000f;
-        var timelineStartMs = 0;
-        var timelineEndMs = Math.Max(songMs, songMs + 30000);
-        _editorView?.GetTimelineViewRange(out timelineStartMs, out timelineEndMs);
         if (_editorPreviewRevision != _editorController.Revision || songMs < _editorPreviewLastMs)
         {
             var currentBulletEventCount = _editorController.CurrentLevel.Bullets.Count;
@@ -1740,7 +1737,8 @@ public sealed class Game1 : Game
             }
 
             _editorPreviewBullets.ClearRuntime();
-            var previewMap = BuildPreviewBeatmapFromEditor(_editorController.CurrentLevel, out var previewSimStartMs, timelineStartMs, timelineEndMs, songMs);
+            // Keep world preview independent from timeline zoom/window so events do not disappear mid-play.
+            var previewMap = BuildPreviewBeatmapFromEditor(_editorController.CurrentLevel, out var previewSimStartMs, null, null, songMs);
             _editorPreviewNotes.Reset(previewMap);
             ApplyBulletDensitySetting();
             _editorPreviewBullets.Reset(previewMap);
@@ -1859,7 +1857,6 @@ public sealed class Game1 : Game
             evt.Count = 8;
             evt.Speed = 190f;
         }
-
         return evt;
     }
 

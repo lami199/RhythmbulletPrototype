@@ -905,15 +905,16 @@ public sealed class BulletSystem
     private void QueueScatterStaticStream(Vector2 origin, int count, float intervalSec, float speed, Style style, MotionKind motion, float amp, float freq)
     {
         var n = Math.Max(1, count);
-        var step = Math.Max(0.01f, intervalSec);
+        var step = Math.Max(0.01f, intervalSec / 3f);
         var totalHold = (n - 1) * step;
-        var scatterRadius = 40f + amp * 0.9f;
+        var scatterRadius = (40f + amp * 0.9f) * 2f;
+        const float horizontalSpawnScale = 2f;
 
         for (var i = 0; i < n; i++)
         {
             var theta = (float)_rng.NextDouble() * MathHelper.TwoPi;
             var dist = MathF.Sqrt((float)_rng.NextDouble()) * scatterRadius;
-            var spawnPos = origin + new Vector2(MathF.Cos(theta), MathF.Sin(theta)) * dist;
+            var spawnPos = origin + new Vector2(MathF.Cos(theta) * horizontalSpawnScale, MathF.Sin(theta)) * dist;
             var holdDelay = totalHold - i * step;
 
             if (i == 0)
@@ -1660,7 +1661,7 @@ public sealed class BulletSystem
 
     private static Vector2 ComputeFountainBouncePosition(float t, Bullet b)
     {
-        const float bounceVelocityScale = 2f; // 2x velocity -> ~4x apex height vs original gravity-only arc
+        const float bounceVelocityScale = 2.2360679f; // sqrt(5): ~5x apex height
         const float defaultExpandPhaseSec = 0.22f;
         var outward = b.Direction.LengthSquared() < 0.0001f ? new Vector2(0f, 1f) : SafeNormalize(b.Direction);
         var expandSpeed = MathF.Max(120f + b.Amp * 1.2f, b.BaseSpeed * 0.45f);
@@ -1701,6 +1702,7 @@ public sealed class BulletSystem
 
         var remaining = u;
         var y = 0f;
+        var previousReboundSpeed = 0f;
 
         for (var bounce = 0; bounce < 12 && remaining > 0.0001f; bounce++)
         {
@@ -1715,15 +1717,19 @@ public sealed class BulletSystem
             y = floorY;
             vy += gravity * impactTime;
 
-            // Each bounce gets much bigger, so time between impacts also increases.
-            var reboundScale = Math.Clamp(0.62f + bounce * 0.13f + u * 0.05f, 0.62f, 1.42f);
-            var reboundSpeed = MathF.Abs(vy) * reboundScale;
+            // Force monotonic rebound growth: each bounce is at least ~20% larger than the previous one.
+            var impactSpeed = MathF.Abs(vy);
+            var growthTarget = bounce == 0
+                ? impactSpeed * 0.95f
+                : previousReboundSpeed * 1.2f;
+            var reboundSpeed = MathF.Max(impactSpeed * 0.75f, growthTarget);
             reboundSpeed = Math.Min(reboundSpeed, (820f + b.Amp * 2.2f) * bounceVelocityScale);
+            previousReboundSpeed = reboundSpeed;
             vy = -reboundSpeed;
             remaining -= impactTime;
 
-            // The more bounces have happened, the more the baseline falls.
-            floorY += floorStep + bounce * 2.1f;
+            // Keep baseline drift modest so larger rebounds remain visually larger.
+            floorY += floorStep + bounce * 0.35f;
 
             if (MathF.Abs(vy) < 12f && bounce > 4)
             {

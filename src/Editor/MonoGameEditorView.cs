@@ -1863,6 +1863,9 @@ public sealed class MonoGameEditorView : IEditorView
         {
             "static_5" => 5,
             "static_10" => 10,
+            "static_scatter_5" => 5,
+            "static_scatter_10" => 10,
+            "static_scatter_20" => 20,
             "static_15" => 15,
             "static_20" => 20,
             "static_25" => 25,

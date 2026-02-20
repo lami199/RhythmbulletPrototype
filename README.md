@@ -1,23 +1,54 @@
-﻿# Rhythm Prototype
+# RhythmbulletPrototype
 
-Small 2D rhythm + bullet prototype inspired by osu!, built with C# + MonoGame DesktopGL.
+RhythmbulletPrototype is a rhythm + bullet-hell prototype built with C# and MonoGame DesktopGL.
 
-## Run
+## Quick Start
 
-1. Install .NET 8 SDK.
-2. From this folder run:
+### Prerequisites
+- .NET 8 SDK
+- DesktopGL native dependencies required by MonoGame on your OS (OpenGL/audio libs)
+
+### Run
+From the project root (`prototype3`):
 
 ```bash
 dotnet run
 ```
 
-## Beatmap Dev Mode
+### Fast Reload During Gameplay
+- Edit `Content/Maps/map.json`
+- Press `F5` in-game to reload map JSON and restart immediately
 
-- Beatmap path: `Content/Maps/map.json`
-- Press `F5` in-game to hot-reload JSON and restart.
-- If `audioPath` is missing or invalid, the game continues with a silent deterministic clock.
+## Project Layout
+- `Game1.cs`: main app loop, menus, gameplay/editor wiring
+- `src/Systems/`: gameplay systems (notes, bullets, VFX, scoring, health, clock)
+- `src/Editor/`: in-game editor view/controller/serialization
+- `Content/Maps/map.json`: default runtime gameplay map
+- `Content/Maps/editor_level.json`: editor working level file
+- `Content/Maps/Projects/*.editor.json`: saved editor projects
+- `Content/Maps/Projects/*.published.map.json`: published runtime maps from editor projects
+- `Program.cs`: startup entrypoint with optional route/course argument
 
-### JSON format
+## Gameplay Controls
+- Mouse move: cursor target
+- `Z` / `X` / Left click: hit input
+- Hold `C`: low-sensitivity focus movement
+- Right click: alt VFX/SFX pulse
+- Middle click: pulse VFX/SFX
+- `F1`: debug HUD
+- `F2`: hitboxes
+- `F3`: toggle mouse smoothing
+- `F5`: reload `map.json` and restart
+- `F6`: cycle target FPS
+- `Space`: pause/unpause (gameplay)
+- `R`: restart current map
+- `+` / `-`: adjust timing offset
+- `Esc`: pause/escape menu
+
+## Beatmap Authoring (`Content/Maps/map.json`)
+Use `Content/Maps/map.json` as the primary runtime map for quick iteration.
+
+Minimal example:
 
 ```json
 {
@@ -26,114 +57,68 @@ dotnet run
   "circleRadius": 42,
   "globalOffsetMs": 0,
   "notes": [
-    { "timeMs": 1000, "x": 0.5, "y": 0.4 }
+    { "timeMs": 1000, "x": 0.50, "y": 0.40 }
   ],
   "bullets": [
-    { "timeMs": 1200, "pattern": "radial", "count": 12, "speed": 260, "x": 0.5, "y": 0.5 },
-    { "timeMs": 2000, "pattern": "aimed", "count": 6, "speed": 320, "intervalMs": 80, "x": 0.5, "y": 0.2 },
-    { "timeMs": 2600, "pattern": "spiral", "count": 16, "speed": 250 }
+    { "timeMs": 1200, "pattern": "radial", "count": 12, "speed": 240, "x": 0.5, "y": 0.5 }
   ]
 }
 ```
 
-## Controls
+Notes:
+- If `audioPath` is missing/invalid, gameplay still runs using a silent deterministic clock.
+- New static scatter patterns are supported:
+  - `static_scatter_5`
+  - `static_scatter_10`
+  - `static_scatter_20`
+- Static scatter emits bullets one-by-one quickly, then releases movement together; selected movement patterns still apply.
 
-- Mouse move: cursor target (smoothed)
-- `WASD`: micro-adjust velocity
-- Left click: hit notes + click VFX/SFX
-- Right click: alt click VFX/SFX
-- Middle click: pulse click VFX/SFX
-- `F1`: debug HUD
-- `F2`: hitbox visualization
-- `Space`: pause/unpause
-- `R`: restart map
-- `+/-`: timing offset adjust
-- `F5`: reload map JSON and restart
-- `F7`: toggle in-game Editor Mode
+## In-Game Editor Workflow
+Open editor from **Main Menu -> Level Editor**.
 
-## Bundled Sample Levels
-
-- `shooting_star` is bundled for main play flow.
-- Source files live in `Content/Maps/Projects/`:
-  - `shooting_star.editor.json`
-  - `shooting_star.editor.published.map.json`
-- Route fallback can target the published file via `Content/Maps/course_routes.json`.
-- To ship custom editor levels through GitHub, keep their published JSON in `Content/Maps/Projects/` (not only under `bin/...` output).
-
-## In-Game Level Editor (MVP)
-
-The project now includes a framework-agnostic editor core under `src/Editor` with a MonoGame adapter.
-
-- Editor file path: `Content/Maps/editor_level.json`
-- Schema uses `schemaVersion` and stores notes + bullet triggers on the same timeline.
-- Runtime/editor share the same data model (`LevelDocument`).
-
-### Editor hotkeys
-
-- `F7`: toggle editor mode
-- `Space`: play/pause transport
-- `K`: stop transport (seek to 0)
-- `[` / `]`: seek -50ms / +50ms
+High-value hotkeys:
+- `P`: play/pause timeline
+- `K`: stop timeline
 - `Left` / `Right`: seek -500ms / +500ms
-- `N`: add tap note at current time (uses mouse normalized pos)
-- `H`: add hold note at current time (default 400ms)
-- `B`: add bullet event at current time (uses current pattern)
-- `1..9`: set lane
+- `[` / `]`: seek -50ms / +50ms
+- `;` / `'`: seek -1ms / +1ms
+- `O`: cycle slow edit speed
+- `N`: place tap note at mouse position
+- `B`: place bullet event at mouse position (uses current static pattern + movement settings)
 - `Up` / `Down`: select previous/next event
 - `Delete`: delete selected event
-- `Q` / `E`: nudge selected -10ms / +10ms (`Shift` for 50ms)
-- `G`: toggle time snap
-- `Ctrl+S`: save editor level JSON
-- `Ctrl+L`: reload editor level JSON
+- `Q` / `E`: nudge selected event (-10/+10ms, hold `Shift` for -50/+50ms)
+- `G`: toggle snap
+- `1..9`: set lane
+- `Ctrl+S`: save editor project
+- `Ctrl+L`: load editor project
+- `Ctrl+P`: publish runtime JSON
 
-### Integration points
+Publishing flow:
+1. Edit in project files (`*.editor.json`)
+2. Publish to runtime JSON (`*.published.map.json`)
+3. Play via route/level selection or direct map load flow
 
-Core interfaces:
-- `IAudioTransport`: transport abstraction (play/pause/stop/seek/time)
-- `INoteReceiver`: runtime note callback
-- `IBulletPatternSpawner`: runtime bullet trigger callback
-- `IEditorView`: UI/input abstraction for editor commands + model rendering
+## Route / Course Argument
+`Program.cs` accepts an optional argument and passes it to `Game1`:
 
-Main classes:
-- `LevelSerializer`: JSON load/save + validation + stable sorting
-- `LevelEditorController`: editor state + command handling
-- `LevelPlayer`: runtime timeline playback of authored events
-- `SongClockAudioTransport`: adapter from existing `SongClock` to `IAudioTransport`
-- `MonoGameEditorView`: lightweight in-game keyboard/mouse editor UI
-
-`Game1` wiring:
-- Initializes editor with `Content/Maps/editor_level.json`
-- Shares `SongClock` through `SongClockAudioTransport`
-- Uses `F7` to toggle editor mode
-- In editor mode, gameplay update/render is skipped and editor overlay is shown
-
-### Example JSON produced by editor
-
-```json
-{
-  "schemaVersion": 1,
-  "audioPath": "Content/Audio/song.ogg",
-  "bpm": 120.0,
-  "nextEventId": 4,
-  "notes": [
-    { "eventId": 1, "timeMs": 1000, "lane": 1, "noteType": "tap", "durationMs": 0, "x": 0.45, "y": 0.42 },
-    { "eventId": 2, "timeMs": 1400, "lane": 2, "noteType": "hold", "durationMs": 400, "x": 0.62, "y": 0.50 }
-  ],
-  "bullets": [
-    {
-      "eventId": 3,
-      "timeMs": 1200,
-      "pattern": "radial",
-      "x": 0.5,
-      "y": 0.1,
-      "parameters": { "count": 12, "speed": 240 }
-    }
-  ]
-}
+```bash
+dotnet run -- course_2
 ```
 
-## Notes
+At runtime, `Game1` checks `Content/Maps/course_routes.json` to resolve the active/selected course map path. If routing fails, it falls back to the default map flow.
 
-- Gameplay runs in virtual `1280x720` space with window scaling.
-- Missing textures and SFX are handled via runtime-generated placeholders.
-- Extra JSON fields are tolerated; required fields are validated with friendly errors.
+## Troubleshooting
+- Game launches but no music:
+  - Verify `audioPath` in map JSON and that the file exists.
+  - If missing, silent deterministic timing is expected behavior.
+- Build/runtime issues on DesktopGL:
+  - Confirm OS-level MonoGame DesktopGL dependencies are installed.
+  - Re-run `dotnet restore` then `dotnet run`.
+- Wrong map loaded:
+  - Check `Content/Maps/course_routes.json`
+  - Check optional route argument passed to `dotnet run -- <route>`
+  - Verify files exist under `Content/Maps/` and `Content/Maps/Projects/`
+
+## License
+This project is licensed under the terms in `LICENSE`.
